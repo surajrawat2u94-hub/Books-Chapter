@@ -4,7 +4,6 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Books & Chapters — DOI Enrichment + Clean</title>
-<!-- SheetJS for reading/writing Excel/CSV -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;background:#0b1020;color:#e9eef9;margin:0}
@@ -23,6 +22,7 @@
   .pill{display:inline-block;padding:4px 8px;border:1px solid #34406b;border-radius:999px;font-size:12px;margin-right:6px}
   .footer{opacity:.7;margin-top:16px;font-size:12px}
   .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .preview{margin-top:8px;font-size:12px;opacity:.8}
 </style>
 </head>
 <body>
@@ -39,7 +39,16 @@
       <div>
         <label><b>Contact email for Crossref (required)</b></label>
         <input id="mailto" type="email" placeholder="you@org.ac.in" />
-        <div class="muted">Crossref asks for a real contact (used only in request header).</div>
+        <div class="muted">Used only in the Crossref request header.</div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div>
+        <label>Sheet</label>
+        <select id="sheetSel"></select>
+      </div>
+      <div>
+        <div class="preview" id="hdrPreview"></div>
       </div>
     </div>
   </div>
@@ -93,22 +102,20 @@
   </div>
 
   <div class="card">
-    <b>Output columns produced</b>
+    <b>Output columns</b>
     <div class="muted">
       CleanTitle, CleanAuthors, DOI (normalized), Publisher, ISSN (joined), ISBN (joined), PubType, SourceTitle (if available)
     </div>
   </div>
 
   <div class="footer">
-    Tip: host this file with <span class="mono">GitHub Pages</span> (Settings → Pages). Works fully client-side.
+    Host with <span class="mono">GitHub Pages</span> (client-side only).
   </div>
 </div>
 
 <script>
-let rawRows = [];     // objects keyed by headers
-let headers = [];
-let processed = [];
-let sourceTitleGuess = null;
+let wb = null, sheetNames = [], activeSheet = null;
+let rawRows = [], headers = [], processed = [], sourceTitleGuess = null;
 
 const stopwords = new Set([
   "a","an","the","and","but","or","nor","for","so","yet",
@@ -116,109 +123,106 @@ const stopwords = new Set([
   "over","into","onto","from","than","with","without","within","about","across","after","before","between","through","under","above","around"
 ]);
 
-function normSpace(s){ return (s||"").toString().replace(/\s+/g," ").trim(); }
+function normSpace(s){ return (s??"").toString().replace(/\s+/g," ").trim(); }
 function isAcronym(w){ return /^[A-Z0-9]{2,}$/.test(w); }
 function capitalizeWord(w){
   if(!w) return w;
   if(isAcronym(w)) return w;
-  // handle hyphenated words
   if(w.includes("-")) return w.split("-").map(capitalizeWord).join("-");
   return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
 }
 function properCaseTitle(str){
-  str = normSpace(str);
-  if(!str) return str;
+  str = normSpace(str); if(!str) return str;
   const words = str.split(" ");
   return words.map((w,i)=>{
     const base = w.replace(/[^\w\-']/g,"");
-    if(i!==0 && i!==(words.length-1) && stopwords.has(base.toLowerCase())) {
-      return w.toLowerCase();
-    }
+    if(i!==0 && i!==(words.length-1) && stopwords.has(base.toLowerCase())) return w.toLowerCase();
     return capitalizeWord(w);
   }).join(" ");
 }
-
-// Try to parse "Surname, I." → "I. Surname", "Last, First M." → "First M. Last", or "First Last"
 function toFirstLast_one(name){
   name = normSpace(name.replace(/\s*\.\s*/g,".").replace(/\s+,/g,","));
   if(!name) return "";
   if(name.includes(",")){
-    // "Last, First ..." or sometimes corporate names — keep simple
     const [last, rest] = name.split(",",2);
     return normSpace(`${rest||""} ${last}`);
   }
-  return name; // already First Last (best guess)
+  return name;
 }
-
 function normalizeAuthors(str){
   if(!str) return "";
-  // common separators: "|", ";", " and ", ", " (but comma can be inside "Last, F")
-  // best: split on pipe or semicolon; if neither, split on " | and "
   let parts = [];
   if(str.includes("|")) parts = str.split("|");
   else if(str.includes(";")) parts = str.split(";");
   else parts = str.split(/\s+and\s+|\s*&\s*/i);
-
-  const cleaned = parts
-    .map(x=>x.trim())
-    .filter(x=>x)
+  return parts.map(x=>x.trim()).filter(Boolean)
     .map(toFirstLast_one)
-    .map(w => w.split(" ").map(p=>isAcronym(p)?p: (p.length<=3 && p===p.toUpperCase()?p : (p.length<=3 && /[A-Z]\./.test(p)?p : capitalizeWord(p)))).join(" "))
-    .map(normSpace);
-
-  return cleaned.join("; ");
+    .map(w=>w.split(" ").map(p=>isAcronym(p)?p:capitalizeWord(p)).join(" "))
+    .map(normSpace)
+    .join("; ");
 }
-
-function pick(arr){ return Array.isArray(arr)?arr: (arr? [arr] : []); }
-
-function doiNormalize(doi){
-  if(!doi) return "";
-  doi = doi.toString().trim();
-  doi = doi.replace(/^https?:\/\/(dx\.)?doi\.org\//i,"");
-  return doi;
-}
+function pick(a){ return Array.isArray(a)?a:(a?[a]:[]); }
+function joinUnique(arr){ return Array.from(new Set(arr.filter(Boolean).map(x=>x.toString().trim()))).join("; "); }
+function doiNormalize(d){ if(!d) return ""; d=d.toString().trim(); return d.replace(/^https?:\/\/(dx\.)?doi\.org\//i,""); }
 
 async function fetchCrossrefByDOI(doi, mailto){
   const url = `https://api.crossref.org/works/${encodeURIComponent(doi)}`;
   const res = await fetch(url, {
     headers: {
-      "User-Agent": `UPES-RnD-BooksChapters/1.0 (mailto:${mailto||"unknown@example.com"})`,
+      "User-Agent": `UPES-RnD-BooksChapters/1.1 (mailto:${mailto||"unknown@example.com"})`,
       "Accept":"application/json"
     }
   });
   if(!res.ok) return null;
   const j = await res.json();
-  return j && j.message ? j.message : null;
-}
-
-function joinUnique(arr){
-  return Array.from(new Set(arr.filter(Boolean).map(x=>x.toString().trim()))).join("; ");
+  return j?.message || null;
 }
 
 function fillSelect(id, headers){
   const el = document.getElementById(id);
   el.innerHTML = '<option value="">-- none --</option>' + headers.map(h=>`<option>${h}</option>`).join("");
 }
-
-function readFileAsync(file){
-  return new Promise((resolve,reject)=>{
-    const reader = new FileReader();
-    reader.onload = e => resolve(e.target.result);
-    reader.onerror = reject;
-    reader.readAsArrayBuffer(file);
-  });
+function showHeaderPreview(){
+  const el = document.getElementById("hdrPreview");
+  el.textContent = headers.length ? `Detected headers: ${headers.join(" | ")}` : "";
 }
 
-// UI elements
+function inferHeaderAndRows(ws){
+  // Read as rows first
+  const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:""});
+  // Find the row (0..19) with the most non-empty cells; prefer rows with some text
+  let bestIdx = 0, bestScore = -1;
+  const scanLimit = Math.min(rows.length, 20);
+  for(let i=0;i<scanLimit;i++){
+    const r = rows[i] || [];
+    const filled = r.filter(x=>String(x).trim()!=="").length;
+    if(filled > bestScore){ bestScore = filled; bestIdx = i; }
+  }
+  const hdr = (rows[bestIdx]||[]).map(x=>normSpace(String(x)));
+  // Build objects for subsequent rows
+  const out = [];
+  for(let i=bestIdx+1;i<rows.length;i++){
+    const r = rows[i] || [];
+    const obj = {};
+    for(let c=0;c<hdr.length;c++){
+      const key = hdr[c] || `Col${c+1}`;
+      obj[key] = r[c] ?? "";
+    }
+    // ignore fully empty rows
+    if(Object.values(obj).some(v=>String(v).trim()!=="")) out.push(obj);
+  }
+  return {headers: hdr.map(h=>h||"Unnamed"), rows: out};
+}
+
+// UI refs
 const fileEl = document.getElementById("file");
+const sheetSel = document.getElementById("sheetSel");
 const mailtoEl = document.getElementById("mailto");
+const statusEl = document.getElementById("status");
 const btnProcess = document.getElementById("btnProcess");
 const btnDownload = document.getElementById("btnDownload");
-const statusEl = document.getElementById("status");
 const prog = document.getElementById("prog");
 const progWrap = document.getElementById("progWrap");
-
-// column selects
 const selTitle = document.getElementById("colTitle");
 const selAuthors = document.getElementById("colAuthors");
 const selDOI = document.getElementById("colDOI");
@@ -226,38 +230,50 @@ const selISSN = document.getElementById("colISSN");
 const selISBN = document.getElementById("colISBN");
 const selType = document.getElementById("colType");
 
-fileEl.addEventListener("change", async (e)=>{
-  processed = [];
-  btnDownload.disabled = true;
+function autoMap(){
+  sourceTitleGuess = headers.find(h => /source\s*title|book\s*title|journal\s*title|scopus\s*source/i.test(h)) || null;
+  fillSelect("colTitle", headers);
+  fillSelect("colAuthors", headers);
+  fillSelect("colDOI", headers);
+  fillSelect("colISSN", headers);
+  fillSelect("colISBN", headers);
+  fillSelect("colType", headers);
 
+  selTitle.value   = headers.find(h=>/^title$/i.test(h)) || headers.find(h=>/chapter|book.*title/i.test(h)) || "";
+  selAuthors.value = headers.find(h=>/author/i.test(h)) || "";
+  selDOI.value     = headers.find(h=>/^doi$/i.test(h)) || "";
+  selISSN.value    = headers.find(h=>/issn/i.test(h)) || "";
+  selISBN.value    = headers.find(h=>/isbn/i.test(h)) || "";
+  selType.value    = headers.find(h=>/type/i.test(h)) || "";
+
+  showHeaderPreview();
+  statusEl.textContent = `Loaded ${rawRows.length} rows from "${sheetSel.value}". Map columns and click Process.`;
+  btnProcess.disabled = false;
+}
+
+function loadActiveSheet(){
+  const ws = wb.Sheets[sheetSel.value];
+  const {headers: hdr, rows} = inferHeaderAndRows(ws);
+  headers = hdr;
+  rawRows = rows;
+  autoMap();
+}
+
+fileEl.addEventListener("change", async (e)=>{
+  processed = []; btnDownload.disabled = true; btnProcess.disabled = true;
   const f = e.target.files[0];
   if(!f){ statusEl.textContent = "No file loaded."; return; }
   statusEl.textContent = "Reading file…";
-  const data = await readFileAsync(f);
-  const wb = XLSX.read(data, {type:"array"});
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const arr = XLSX.utils.sheet_to_json(ws, {defval:""});
-
-  if(!arr.length){ statusEl.textContent = "Sheet is empty."; return; }
-
-  rawRows = arr;
-  headers = Object.keys(arr[0]);
-  // Heuristic: remember a likely Source Title header for output
-  sourceTitleGuess = headers.find(h => /source\s*title|book\s*title|journal\s*title|scopus\s*source/i.test(h)) || null;
-
-  [selTitle, selAuthors, selDOI, selISSN, selISBN, selType].forEach(s=>fillSelect(s, headers));
-
-  // Try auto-map by name
-  selTitle.value = headers.find(h=>/^title$/i.test(h)) || headers.find(h=>/chapter|book.*title/i.test(h)) || "";
-  selAuthors.value = headers.find(h=>/author/i.test(h)) || "";
-  selDOI.value = headers.find(h=>/^doi$/i.test(h)) || "";
-  selISSN.value = headers.find(h=>/issn/i.test(h)) || "";
-  selISBN.value = headers.find(h=>/isbn/i.test(h)) || "";
-  selType.value = headers.find(h=>/type/i.test(h)) || "";
-
-  statusEl.textContent = `Loaded ${arr.length} rows. Map your columns and click Process.`;
-  btnProcess.disabled = false;
+  const data = await f.arrayBuffer();
+  wb = XLSX.read(data, {type:"array"});
+  sheetNames = wb.SheetNames;
+  sheetSel.innerHTML = sheetNames.map(n=>`<option>${n}</option>`).join("");
+  statusEl.textContent = `Workbook loaded. Selected sheet: ${sheetNames[0]}.`;
+  sheetSel.value = sheetNames[0];
+  loadActiveSheet();
 });
+
+sheetSel.addEventListener("change", loadActiveSheet);
 
 async function processAll(){
   const mailto = mailtoEl.value.trim();
@@ -268,21 +284,12 @@ async function processAll(){
   const hTitle = selTitle.value, hAuthors = selAuthors.value, hDOI = selDOI.value;
   const hISSN = selISSN.value, hISBN = selISBN.value, hType = selType.value;
 
-  if(!hTitle || !hAuthors || !hDOI){
-    alert("Please map Title, Authors and DOI columns.");
-    return;
-  }
-  if(!mailto){
-    alert("Please enter a contact email for Crossref requests.");
-    return;
-  }
+  if(!hTitle || !hAuthors || !hDOI){ alert("Please map Title, Authors and DOI columns."); return; }
+  if(!mailto){ alert("Please enter a contact email for Crossref requests."); return; }
 
   processed = [];
-  progWrap.style.display = "block";
-  prog.value = 0; prog.max = rawRows.length;
+  progWrap.style.display = "block"; prog.value = 0; prog.max = rawRows.length;
   statusEl.textContent = "Processing…";
-
-  // polite pacing
   const sleep = ms => new Promise(r=>setTimeout(r,ms));
 
   for(let i=0;i<rawRows.length;i++){
@@ -305,51 +312,28 @@ async function processAll(){
       try{
         const meta = await fetchCrossrefByDOI(doi, mailto);
         if(meta){
-          // Publisher
           if(meta.publisher) pub = meta.publisher;
-
-          // ISSN
-          const issnArr = pick(meta["ISSN"]);
-          if(issnArr.length){
-            issn = joinUnique([issn, ...issnArr]);
-          }
-
-          // ISBN (for book / chapter)
-          const isbns = pick(meta["ISBN"]);
-          if(isbns.length){
-            isbn = joinUnique([isbn, ...isbns]);
-          }
-
-          // Better type
+          const issnArr = pick(meta.ISSN); if(issnArr.length) issn = joinUnique([issn,...issnArr]);
+          const isbns = pick(meta.ISBN);   if(isbns.length)   isbn = joinUnique([isbn,...isbns]);
           if(meta.type) pubType = pubType || meta.type;
-
-          // Prefer Crossref authors if available (more reliable “given+family”)
           if(fixAuthors && Array.isArray(meta.author) && meta.author.length){
             const names = meta.author.map(a=>{
-              const given = normSpace(a.given||"");
-              const family = normSpace(a.family||"");
+              const given = normSpace(a.given||""); const family = normSpace(a.family||"");
               let fn = normSpace(`${given} ${family}`.trim());
-              if(!fn && a.name){ // fallback if only 'name'
-                fn = toFirstLast_one(a.name);
-              }
+              if(!fn && a.name) fn = toFirstLast_one(a.name);
               return fn.split(" ").map(p=>isAcronym(p)?p:capitalizeWord(p)).join(" ");
             });
             cleanAuthors = names.filter(Boolean).join("; ");
           }
-
-          // Prefer Crossref title if your title cell is messy
           if(fixTitle && Array.isArray(meta.title) && meta.title[0]){
             cleanTitle = properCaseTitle(meta.title[0]);
           }
-
-          // Container title as SourceTitle if not present
           if(!sourceTitle){
             const container = (meta["container-title"] && meta["container-title"][0]) ? meta["container-title"][0] : "";
             sourceTitle = normSpace(container);
           }
         }
-      }catch(e){ /* ignore row errors */ }
-      // gentle throttle (Crossref-friendly)
+      }catch(e){}
       await sleep(220);
     }
 
@@ -365,23 +349,19 @@ async function processAll(){
       _OriginalTitle: title,
       _OriginalAuthors: authors
     });
-
     prog.value = i+1;
   }
-
   statusEl.textContent = `Done. Processed ${processed.length} rows.`;
   btnDownload.disabled = false;
 }
-
 function downloadXLSX(){
   const ws = XLSX.utils.json_to_sheet(processed);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Cleaned");
-  XLSX.writeFile(wb, "books_chapters_cleaned.xlsx");
+  const wb2 = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb2, ws, "Cleaned");
+  XLSX.writeFile(wb2, "books_chapters_cleaned.xlsx");
 }
-
-btnProcess.addEventListener("click", processAll);
-btnDownload.addEventListener("click", downloadXLSX);
+document.getElementById("btnProcess").addEventListener("click", processAll);
+document.getElementById("btnDownload").addEventListener("click", downloadXLSX);
 </script>
 </body>
 </html>

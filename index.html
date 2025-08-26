@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Books & Chapters — DOI Enrichment + Clean</title>
+<!-- SheetJS for reading/writing Excel/CSV -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;background:#0b1020;color:#e9eef9;margin:0}
+  .wrap{max-width:1100px;margin:24px auto;padding:24px;background:#121833;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+  h1{margin-top:0;font-size:22px}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+  .card{background:#0f152a;border:1px solid #1f2747;border-radius:12px;padding:14px}
+  label{font-size:13px;opacity:.85}
+  select,input[type="text"],input[type="email"]{width:100%;padding:10px;border-radius:10px;border:1px solid #31406d;background:#0b1130;color:#e9eef9}
+  button{padding:10px 14px;border:1px solid #2a8cff;background:#1463ff;color:white;border-radius:10px;cursor:pointer}
+  button.secondary{background:transparent;border-color:#3a4d86}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .muted{font-size:12px;opacity:.8}
+  progress{width:100%}
+  .pill{display:inline-block;padding:4px 8px;border:1px solid #34406b;border-radius:999px;font-size:12px;margin-right:6px}
+  .footer{opacity:.7;margin-top:16px;font-size:12px}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Books & Chapters Cleaner (DOI → Publisher/ISSN/ISBN)</h1>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label><b>Upload file (CSV/XLSX)</b></label>
+        <input id="file" type="file" accept=".csv,.xlsx,.xls" />
+        <div class="muted">Make sure your sheet has at least: Title, Authors, DOI (ISSN/ISBN optional).</div>
+      </div>
+      <div>
+        <label><b>Contact email for Crossref (required)</b></label>
+        <input id="mailto" type="email" placeholder="you@org.ac.in" />
+        <div class="muted">Crossref asks for a real contact (used only in request header).</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row3">
+      <div>
+        <label>Title column</label>
+        <select id="colTitle"></select>
+      </div>
+      <div>
+        <label>Authors column</label>
+        <select id="colAuthors"></select>
+      </div>
+      <div>
+        <label>DOI column</label>
+        <select id="colDOI"></select>
+      </div>
+    </div>
+    <div class="row3" style="margin-top:10px">
+      <div>
+        <label>ISSN column (optional)</label>
+        <select id="colISSN"></select>
+      </div>
+      <div>
+        <label>ISBN column (optional)</label>
+        <select id="colISBN"></select>
+      </div>
+      <div>
+        <label>Publication type column (optional)</label>
+        <select id="colType"></select>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label>Options</label><br />
+        <span class="pill"><input id="opt_fixTitle" type="checkbox" checked /> Proper-case titles (keep acronyms; small articles/preps/conj)</span>
+        <span class="pill"><input id="opt_fixAuthors" type="checkbox" checked /> Normalize authors to “First Last”</span>
+        <span class="pill"><input id="opt_useCrossref" type="checkbox" checked /> Enrich from Crossref (Publisher/ISSN/ISBN)</span>
+      </div>
+      <div style="text-align:right">
+        <button id="btnProcess" disabled>Process</button>
+        <button id="btnDownload" class="secondary" disabled>Download XLSX</button>
+      </div>
+    </div>
+    <div id="status" class="muted" style="margin-top:8px">No file loaded.</div>
+    <div id="progWrap" style="display:none;margin-top:8px"><progress id="prog" value="0" max="100"></progress></div>
+  </div>
+
+  <div class="card">
+    <b>Output columns produced</b>
+    <div class="muted">
+      CleanTitle, CleanAuthors, DOI (normalized), Publisher, ISSN (joined), ISBN (joined), PubType, SourceTitle (if available)
+    </div>
+  </div>
+
+  <div class="footer">
+    Tip: host this file with <span class="mono">GitHub Pages</span> (Settings → Pages). Works fully client-side.
+  </div>
+</div>
+
+<script>
+let rawRows = [];     // objects keyed by headers
+let headers = [];
+let processed = [];
+let sourceTitleGuess = null;
+
+const stopwords = new Set([
+  "a","an","the","and","but","or","nor","for","so","yet",
+  "at","by","in","of","off","on","per","to","up","via","vs","as",
+  "over","into","onto","from","than","with","without","within","about","across","after","before","between","through","under","above","around"
+]);
+
+function normSpace(s){ return (s||"").toString().replace(/\s+/g," ").trim(); }
+function isAcronym(w){ return /^[A-Z0-9]{2,}$/.test(w); }
+function capitalizeWord(w){
+  if(!w) return w;
+  if(isAcronym(w)) return w;
+  // handle hyphenated words
+  if(w.includes("-")) return w.split("-").map(capitalizeWord).join("-");
+  return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+}
+function properCaseTitle(str){
+  str = normSpace(str);
+  if(!str) return str;
+  const words = str.split(" ");
+  return words.map((w,i)=>{
+    const base = w.replace(/[^\w\-']/g,"");
+    if(i!==0 && i!==(words.length-1) && stopwords.has(base.toLowerCase())) {
+      return w.toLowerCase();
+    }
+    return capitalizeWord(w);
+  }).join(" ");
+}
+
+// Try to parse "Surname, I." → "I. Surname", "Last, First M." → "First M. Last", or "First Last"
+function toFirstLast_one(name){
+  name = normSpace(name.replace(/\s*\.\s*/g,".").replace(/\s+,/g,","));
+  if(!name) return "";
+  if(name.includes(",")){
+    // "Last, First ..." or sometimes corporate names — keep simple
+    const [last, rest] = name.split(",",2);
+    return normSpace(`${rest||""} ${last}`);
+  }
+  return name; // already First Last (best guess)
+}
+
+function normalizeAuthors(str){
+  if(!str) return "";
+  // common separators: "|", ";", " and ", ", " (but comma can be inside "Last, F")
+  // best: split on pipe or semicolon; if neither, split on " | and "
+  let parts = [];
+  if(str.includes("|")) parts = str.split("|");
+  else if(str.includes(";")) parts = str.split(";");
+  else parts = str.split(/\s+and\s+|\s*&\s*/i);
+
+  const cleaned = parts
+    .map(x=>x.trim())
+    .filter(x=>x)
+    .map(toFirstLast_one)
+    .map(w => w.split(" ").map(p=>isAcronym(p)?p: (p.length<=3 && p===p.toUpperCase()?p : (p.length<=3 && /[A-Z]\./.test(p)?p : capitalizeWord(p)))).join(" "))
+    .map(normSpace);
+
+  return cleaned.join("; ");
+}
+
+function pick(arr){ return Array.isArray(arr)?arr: (arr? [arr] : []); }
+
+function doiNormalize(doi){
+  if(!doi) return "";
+  doi = doi.toString().trim();
+  doi = doi.replace(/^https?:\/\/(dx\.)?doi\.org\//i,"");
+  return doi;
+}
+
+async function fetchCrossrefByDOI(doi, mailto){
+  const url = `https://api.crossref.org/works/${encodeURIComponent(doi)}`;
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": `UPES-RnD-BooksChapters/1.0 (mailto:${mailto||"unknown@example.com"})`,
+      "Accept":"application/json"
+    }
+  });
+  if(!res.ok) return null;
+  const j = await res.json();
+  return j && j.message ? j.message : null;
+}
+
+function joinUnique(arr){
+  return Array.from(new Set(arr.filter(Boolean).map(x=>x.toString().trim()))).join("; ");
+}
+
+function fillSelect(id, headers){
+  const el = document.getElementById(id);
+  el.innerHTML = '<option value="">-- none --</option>' + headers.map(h=>`<option>${h}</option>`).join("");
+}
+
+function readFileAsync(file){
+  return new Promise((resolve,reject)=>{
+    const reader = new FileReader();
+    reader.onload = e => resolve(e.target.result);
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+// UI elements
+const fileEl = document.getElementById("file");
+const mailtoEl = document.getElementById("mailto");
+const btnProcess = document.getElementById("btnProcess");
+const btnDownload = document.getElementById("btnDownload");
+const statusEl = document.getElementById("status");
+const prog = document.getElementById("prog");
+const progWrap = document.getElementById("progWrap");
+
+// column selects
+const selTitle = document.getElementById("colTitle");
+const selAuthors = document.getElementById("colAuthors");
+const selDOI = document.getElementById("colDOI");
+const selISSN = document.getElementById("colISSN");
+const selISBN = document.getElementById("colISBN");
+const selType = document.getElementById("colType");
+
+fileEl.addEventListener("change", async (e)=>{
+  processed = [];
+  btnDownload.disabled = true;
+
+  const f = e.target.files[0];
+  if(!f){ statusEl.textContent = "No file loaded."; return; }
+  statusEl.textContent = "Reading file…";
+  const data = await readFileAsync(f);
+  const wb = XLSX.read(data, {type:"array"});
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const arr = XLSX.utils.sheet_to_json(ws, {defval:""});
+
+  if(!arr.length){ statusEl.textContent = "Sheet is empty."; return; }
+
+  rawRows = arr;
+  headers = Object.keys(arr[0]);
+  // Heuristic: remember a likely Source Title header for output
+  sourceTitleGuess = headers.find(h => /source\s*title|book\s*title|journal\s*title|scopus\s*source/i.test(h)) || null;
+
+  [selTitle, selAuthors, selDOI, selISSN, selISBN, selType].forEach(s=>fillSelect(s, headers));
+
+  // Try auto-map by name
+  selTitle.value = headers.find(h=>/^title$/i.test(h)) || headers.find(h=>/chapter|book.*title/i.test(h)) || "";
+  selAuthors.value = headers.find(h=>/author/i.test(h)) || "";
+  selDOI.value = headers.find(h=>/^doi$/i.test(h)) || "";
+  selISSN.value = headers.find(h=>/issn/i.test(h)) || "";
+  selISBN.value = headers.find(h=>/isbn/i.test(h)) || "";
+  selType.value = headers.find(h=>/type/i.test(h)) || "";
+
+  statusEl.textContent = `Loaded ${arr.length} rows. Map your columns and click Process.`;
+  btnProcess.disabled = false;
+});
+
+async function processAll(){
+  const mailto = mailtoEl.value.trim();
+  const useCrossref = document.getElementById("opt_useCrossref").checked;
+  const fixTitle = document.getElementById("opt_fixTitle").checked;
+  const fixAuthors = document.getElementById("opt_fixAuthors").checked;
+
+  const hTitle = selTitle.value, hAuthors = selAuthors.value, hDOI = selDOI.value;
+  const hISSN = selISSN.value, hISBN = selISBN.value, hType = selType.value;
+
+  if(!hTitle || !hAuthors || !hDOI){
+    alert("Please map Title, Authors and DOI columns.");
+    return;
+  }
+  if(!mailto){
+    alert("Please enter a contact email for Crossref requests.");
+    return;
+  }
+
+  processed = [];
+  progWrap.style.display = "block";
+  prog.value = 0; prog.max = rawRows.length;
+  statusEl.textContent = "Processing…";
+
+  // polite pacing
+  const sleep = ms => new Promise(r=>setTimeout(r,ms));
+
+  for(let i=0;i<rawRows.length;i++){
+    const r = rawRows[i];
+    let title = normSpace(r[hTitle]);
+    let authors = normSpace(r[hAuthors]);
+    let doiRaw = normSpace(r[hDOI]);
+    let issnLocal = normSpace(hISSN ? r[hISSN] : "");
+    let isbnLocal = normSpace(hISBN ? r[hISBN] : "");
+    let typeLocal = normSpace(hType ? r[hType] : "");
+    let sourceTitle = sourceTitleGuess ? normSpace(r[sourceTitleGuess]) : "";
+
+    const doi = doiNormalize(doiRaw);
+    let pub = "", issn = issnLocal, isbn = isbnLocal, cleanAuthors = authors, cleanTitle = title, pubType = typeLocal;
+
+    if(fixTitle) cleanTitle = properCaseTitle(title);
+    if(fixAuthors) cleanAuthors = normalizeAuthors(authors);
+
+    if(useCrossref && doi){
+      try{
+        const meta = await fetchCrossrefByDOI(doi, mailto);
+        if(meta){
+          // Publisher
+          if(meta.publisher) pub = meta.publisher;
+
+          // ISSN
+          const issnArr = pick(meta["ISSN"]);
+          if(issnArr.length){
+            issn = joinUnique([issn, ...issnArr]);
+          }
+
+          // ISBN (for book / chapter)
+          const isbns = pick(meta["ISBN"]);
+          if(isbns.length){
+            isbn = joinUnique([isbn, ...isbns]);
+          }
+
+          // Better type
+          if(meta.type) pubType = pubType || meta.type;
+
+          // Prefer Crossref authors if available (more reliable “given+family”)
+          if(fixAuthors && Array.isArray(meta.author) && meta.author.length){
+            const names = meta.author.map(a=>{
+              const given = normSpace(a.given||"");
+              const family = normSpace(a.family||"");
+              let fn = normSpace(`${given} ${family}`.trim());
+              if(!fn && a.name){ // fallback if only 'name'
+                fn = toFirstLast_one(a.name);
+              }
+              return fn.split(" ").map(p=>isAcronym(p)?p:capitalizeWord(p)).join(" ");
+            });
+            cleanAuthors = names.filter(Boolean).join("; ");
+          }
+
+          // Prefer Crossref title if your title cell is messy
+          if(fixTitle && Array.isArray(meta.title) && meta.title[0]){
+            cleanTitle = properCaseTitle(meta.title[0]);
+          }
+
+          // Container title as SourceTitle if not present
+          if(!sourceTitle){
+            const container = (meta["container-title"] && meta["container-title"][0]) ? meta["container-title"][0] : "";
+            sourceTitle = normSpace(container);
+          }
+        }
+      }catch(e){ /* ignore row errors */ }
+      // gentle throttle (Crossref-friendly)
+      await sleep(220);
+    }
+
+    processed.push({
+      CleanTitle: cleanTitle,
+      CleanAuthors: cleanAuthors,
+      DOI: doi || doiRaw,
+      Publisher: pub,
+      ISSN: issn,
+      ISBN: isbn,
+      PubType: pubType,
+      SourceTitle: sourceTitle,
+      _OriginalTitle: title,
+      _OriginalAuthors: authors
+    });
+
+    prog.value = i+1;
+  }
+
+  statusEl.textContent = `Done. Processed ${processed.length} rows.`;
+  btnDownload.disabled = false;
+}
+
+function downloadXLSX(){
+  const ws = XLSX.utils.json_to_sheet(processed);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Cleaned");
+  XLSX.writeFile(wb, "books_chapters_cleaned.xlsx");
+}
+
+btnProcess.addEventListener("click", processAll);
+btnDownload.addEventListener("click", downloadXLSX);
+</script>
+</body>
+</html>

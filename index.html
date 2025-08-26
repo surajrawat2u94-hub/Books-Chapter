@@ -2,44 +2,49 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Books & Chapters — DOI Enrichment + Clean</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Books & Chapters — Enrich (DOI/Title) · Clean · Audit</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
-  body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;background:#0b1020;color:#e9eef9;margin:0}
-  .wrap{max-width:1100px;margin:24px auto;padding:24px;background:#121833;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
-  h1{margin-top:0;font-size:22px}
+  :root{--bg:#0b1020;--panel:#121833;--card:#0f152a;--line:#1f2747;--ink:#e9eef9;--mut:#9fb0e1;--accent:#1463ff}
+  *{box-sizing:border-box}
+  body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);margin:0}
+  .wrap{max-width:1200px;margin:24px auto;padding:24px;background:var(--panel);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+  h1{margin:0 0 12px;font-size:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:12px}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
   .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
-  .card{background:#0f152a;border:1px solid #1f2747;border-radius:12px;padding:14px}
-  label{font-size:13px;opacity:.85}
-  select,input[type="text"],input[type="email"]{width:100%;padding:10px;border-radius:10px;border:1px solid #31406d;background:#0b1130;color:#e9eef9}
-  button{padding:10px 14px;border:1px solid #2a8cff;background:#1463ff;color:white;border-radius:10px;cursor:pointer}
-  button.secondary{background:transparent;border-color:#3a4d86}
-  button:disabled{opacity:.5;cursor:not-allowed}
-  .muted{font-size:12px;opacity:.8}
+  label{font-size:13px;opacity:.92}
+  select,input[type="text"],input[type="email"],input[type="number"],input[type="range"]{width:100%;padding:10px;border-radius:10px;border:1px solid #31406d;background:#0b1130;color:var(--ink)}
+  .pill{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid #34406b;border-radius:999px;font-size:12px;margin:4px 6px 0 0}
+  .muted{font-size:12px;color:var(--mut)}
+  .btn{padding:10px 14px;border:1px solid #2a8cff;background:var(--accent);color:#fff;border-radius:10px;cursor:pointer}
+  .btn.secondary{background:transparent;border-color:#3a4d86}
+  .btn:disabled{opacity:.55;cursor:not-allowed}
   progress{width:100%}
-  .pill{display:inline-block;padding:4px 8px;border:1px solid #34406b;border-radius:999px;font-size:12px;margin-right:6px}
-  .footer{opacity:.7;margin-top:16px;font-size:12px}
   .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-  .preview{margin-top:8px;font-size:12px;opacity:.8}
+  .kv{display:flex;gap:10px;flex-wrap:wrap}
+  .kv .k{min-width:170px}
+  .stat{display:inline-block;margin-right:14px;font-size:12px;color:var(--mut)}
+  .preview{font-size:12px;color:var(--mut);margin-top:6px}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Books & Chapters Cleaner (DOI → Publisher/ISSN/ISBN)</h1>
+  <h1>Books & Chapters — Enrich (DOI/Title), Clean, Audit</h1>
 
+  <!-- Load + sheet -->
   <div class="card">
     <div class="row">
       <div>
         <label><b>Upload file (CSV/XLSX)</b></label>
         <input id="file" type="file" accept=".csv,.xlsx,.xls" />
-        <div class="muted">Make sure your sheet has at least: Title, Authors, DOI (ISSN/ISBN optional).</div>
+        <div class="muted">Needs columns for Title, Authors, DOI (ISSN/ISBN/Year optional).</div>
       </div>
       <div>
         <label><b>Contact email for Crossref (required)</b></label>
         <input id="mailto" type="email" placeholder="you@org.ac.in" />
-        <div class="muted">Used only in the Crossref request header.</div>
+        <div class="muted">Used only in the Crossref request header (polite etiquette).</div>
       </div>
     </div>
     <div class="row" style="margin-top:10px">
@@ -48,80 +53,92 @@
         <select id="sheetSel"></select>
       </div>
       <div>
-        <div class="preview" id="hdrPreview"></div>
+        <div id="hdrPreview" class="preview"></div>
       </div>
     </div>
   </div>
 
+  <!-- Column mapping -->
   <div class="card">
     <div class="row3">
-      <div>
-        <label>Title column</label>
-        <select id="colTitle"></select>
-      </div>
-      <div>
-        <label>Authors column</label>
-        <select id="colAuthors"></select>
-      </div>
-      <div>
-        <label>DOI column</label>
-        <select id="colDOI"></select>
-      </div>
+      <div><label>Title column</label><select id="colTitle"></select></div>
+      <div><label>Authors column</label><select id="colAuthors"></select></div>
+      <div><label>DOI column</label><select id="colDOI"></select></div>
     </div>
     <div class="row3" style="margin-top:10px">
-      <div>
-        <label>ISSN column (optional)</label>
-        <select id="colISSN"></select>
+      <div><label>ISSN column (optional)</label><select id="colISSN"></select></div>
+      <div><label>ISBN column (optional)</label><select id="colISBN"></select></div>
+      <div><label>Publication type column (optional)</label><select id="colType"></select></div>
+    </div>
+    <div class="row3" style="margin-top:10px">
+      <div><label>Year column (optional)</label><select id="colYear"></select></div>
+      <div class="k">
+        <label>Title-match threshold <span id="thrVal" class="muted"></span></label>
+        <input id="thr" type="range" min="0.50" max="0.90" step="0.01" value="0.68" />
+        <div class="muted">Higher = stricter title matches (used when DOI missing)</div>
       </div>
-      <div>
-        <label>ISBN column (optional)</label>
-        <select id="colISBN"></select>
-      </div>
-      <div>
-        <label>Publication type column (optional)</label>
-        <select id="colType"></select>
+      <div class="k">
+        <label>Year tolerance (±)</label>
+        <input id="tolYear" type="number" min="0" max="3" value="1" />
+        <div class="muted">Used only if Year column is mapped</div>
       </div>
     </div>
   </div>
 
+  <!-- Options + actions -->
   <div class="card">
-    <div class="row">
-      <div>
-        <label>Options</label><br />
-        <span class="pill"><input id="opt_fixTitle" type="checkbox" checked /> Proper-case titles (keep acronyms; small articles/preps/conj)</span>
-        <span class="pill"><input id="opt_fixAuthors" type="checkbox" checked /> Normalize authors to “First Last”</span>
-        <span class="pill"><input id="opt_useCrossref" type="checkbox" checked /> Enrich from Crossref (Publisher/ISSN/ISBN)</span>
-      </div>
-      <div style="text-align:right">
-        <button id="btnProcess" disabled>Process</button>
-        <button id="btnDownload" class="secondary" disabled>Download XLSX</button>
-      </div>
+    <div class="kv">
+      <span class="pill"><input id="opt_fixTitle" type="checkbox" checked /> Proper-case titles (keep ACRONYMS; small articles/preps/conj lowercase)</span>
+      <span class="pill"><input id="opt_fixAuthors" type="checkbox" checked /> Normalize authors → “First Last”</span>
+      <span class="pill"><input id="opt_useCrossref" type="checkbox" checked /> Enrich from Crossref</span>
+      <span class="pill"><input id="opt_useCache" type="checkbox" checked /> Cache lookups (localStorage)</span>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:10px">
+      <button id="btnExportCache" class="btn secondary" disabled>Export cache</button>
+      <button id="btnClearCache" class="btn secondary">Clear cache</button>
+      <button id="btnProcess" class="btn" disabled>Process</button>
+      <button id="btnDownload" class="btn secondary" disabled>Download XLSX</button>
     </div>
     <div id="status" class="muted" style="margin-top:8px">No file loaded.</div>
     <div id="progWrap" style="display:none;margin-top:8px"><progress id="prog" value="0" max="100"></progress></div>
+    <div id="stats" class="preview"></div>
   </div>
 
   <div class="card">
-    <b>Output columns</b>
+    <b>Outputs</b>
     <div class="muted">
-      CleanTitle, CleanAuthors, DOI (normalized), Publisher, ISSN (joined), ISBN (joined), PubType, SourceTitle (if available)
+      <ul>
+        <li><b>Cleaned</b> — CleanTitle, CleanAuthors, DOI, Publisher, ISSN, ISBN, PubType, SourceTitle, MatchMethod, MatchConfidence, MatchNote</li>
+        <li><b>UniqueAuthors</b> — CanonicalAuthor, Occurrences, SeenVariants</li>
+        <li><b>Unmatched</b> — rows without DOI and no confident title match</li>
+        <li><b>Audit</b> — per-row enrichment details (for QA)</li>
+      </ul>
+      Host safely on <span class="mono">GitHub Pages</span> — all processing is client-side.
     </div>
-  </div>
-
-  <div class="footer">
-    Host with <span class="mono">GitHub Pages</span> (client-side only).
   </div>
 </div>
 
 <script>
-let wb = null, sheetNames = [], activeSheet = null;
-let rawRows = [], headers = [], processed = [], sourceTitleGuess = null;
+/* ================================
+   Scientist-Programmer Edition
+   — robust matching, audit trail,
+   caching, confidence scoring —
+   ================================ */
 
+let wb=null, rawRows=[], headers=[], processed=[], audit=[], unmatched=[];
+let sourceTitleGuess=null;
+
+/*** --- Config --- ***/
+const POLITE_DELAY_MS = 220;  // Crossref-friendly pacing
+const CACHE_KEY = "crCache_v2"; // localStorage key
+
+/*** --- Utilities --- ***/
 const stopwords = new Set([
   "a","an","the","and","but","or","nor","for","so","yet",
   "at","by","in","of","off","on","per","to","up","via","vs","as",
   "over","into","onto","from","than","with","without","within","about","across","after","before","between","through","under","above","around"
 ]);
+const particles = new Set(["van","von","de","del","della","der","den","da","dos","das","di","al","bin","ibn","la","le","du","ter"]);
 
 function normSpace(s){ return (s??"").toString().replace(/\s+/g," ").trim(); }
 function isAcronym(w){ return /^[A-Z0-9]{2,}$/.test(w); }
@@ -144,198 +161,334 @@ function toFirstLast_one(name){
   name = normSpace(name.replace(/\s*\.\s*/g,".").replace(/\s+,/g,","));
   if(!name) return "";
   if(name.includes(",")){
-    const [last, rest] = name.split(",",2);
-    return normSpace(`${rest||""} ${last}`);
+    const [last,rest]=name.split(",",2);
+    let parts = normSpace(`${rest||""} ${last}`).split(" ").filter(Boolean);
+    // keep particles lower-case
+    parts = parts.map((p,i)=> particles.has(p.toLowerCase()) ? p.toLowerCase() : capitalizeWord(p));
+    return parts.join(" ");
   }
-  return name;
+  return name.split(" ").map(p=>particles.has(p.toLowerCase())?p.toLowerCase():capitalizeWord(p)).join(" ");
 }
 function normalizeAuthors(str){
   if(!str) return "";
-  let parts = [];
-  if(str.includes("|")) parts = str.split("|");
-  else if(str.includes(";")) parts = str.split(";");
-  else parts = str.split(/\s+and\s+|\s*&\s*/i);
+  let parts=[];
+  if(str.includes("|")) parts=str.split("|");
+  else if(str.includes(";")) parts=str.split(";");
+  else parts=str.split(/\s+and\s+|\s*&\s*/i);
   return parts.map(x=>x.trim()).filter(Boolean)
     .map(toFirstLast_one)
-    .map(w=>w.split(" ").map(p=>isAcronym(p)?p:capitalizeWord(p)).join(" "))
     .map(normSpace)
     .join("; ");
+}
+function firstAuthorSurnameGuess(str){
+  if(!str) return "";
+  let first = str.split("|")[0].split(";")[0].trim();
+  if(!first) return "";
+  if(first.includes(",")) return normSpace(first.split(",")[0]).toLowerCase();
+  const toks = first.split(" ").filter(Boolean);
+  return toks.length ? toks[toks.length-1].toLowerCase() : "";
 }
 function pick(a){ return Array.isArray(a)?a:(a?[a]:[]); }
 function joinUnique(arr){ return Array.from(new Set(arr.filter(Boolean).map(x=>x.toString().trim()))).join("; "); }
 function doiNormalize(d){ if(!d) return ""; d=d.toString().trim(); return d.replace(/^https?:\/\/(dx\.)?doi\.org\//i,""); }
 
+/*** --- Title similarity & scoring --- ***/
+function normTitleForMatch(s){
+  return normSpace(s.toLowerCase()
+    .replace(/[\u2010-\u2015]/g,"-")
+    .replace(/[^\w\s-]/g,""))
+    .split(" ")
+    .filter(w=>w && !stopwords.has(w))
+    .join(" ");
+}
+function jaccard(a,b){
+  const A=new Set(a.split(" ").filter(Boolean));
+  const B=new Set(b.split(" ").filter(Boolean));
+  const inter=[...A].filter(x=>B.has(x)).length;
+  const uni=new Set([...A,...B]).size||1;
+  return inter/uni;
+}
+function confidenceFromFeatures({jac, authorHit, yearOk}){
+  // base on Jaccard, gentle bonuses
+  let s = jac;
+  if(authorHit) s += 0.12;
+  if(yearOk)    s += 0.08;
+  return Math.max(0, Math.min(1, s));
+}
+
+/*** --- Cache --- ***/
+function getCache(){
+  if(!localStorage) return {};
+  try{ return JSON.parse(localStorage.getItem(CACHE_KEY)||"{}"); }catch{ return {}; }
+}
+function setCache(obj){
+  if(!localStorage) return;
+  try{ localStorage.setItem(CACHE_KEY, JSON.stringify(obj)); }catch{}
+}
+function cacheGet(key){ const c=getCache(); return c[key]; }
+function cacheSet(key,val){ const c=getCache(); c[key]=val; setCache(c); }
+
+/*** --- Crossref API --- ***/
 async function fetchCrossrefByDOI(doi, mailto){
+  const key = `doi::${doi.toLowerCase()}`;
+  const useCache = document.getElementById("opt_useCache").checked;
+  if(useCache){
+    const hit = cacheGet(key);
+    if(hit) return hit;
+  }
   const url = `https://api.crossref.org/works/${encodeURIComponent(doi)}`;
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": `UPES-RnD-BooksChapters/1.1 (mailto:${mailto||"unknown@example.com"})`,
-      "Accept":"application/json"
-    }
-  });
+  const res = await fetch(url,{headers:{
+    "User-Agent":`UPES-RnD-Scientist/1.3 (mailto:${mailto||"unknown@example.com"})`,
+    "Accept":"application/json"}});
   if(!res.ok) return null;
   const j = await res.json();
-  return j?.message || null;
+  const msg = j?.message||null;
+  if(useCache && msg) cacheSet(key,msg);
+  return msg;
 }
-
-function fillSelect(id, headers){
-  const el = document.getElementById(id);
-  el.innerHTML = '<option value="">-- none --</option>' + headers.map(h=>`<option>${h}</option>`).join("");
-}
-function showHeaderPreview(){
-  const el = document.getElementById("hdrPreview");
-  el.textContent = headers.length ? `Detected headers: ${headers.join(" | ")}` : "";
-}
-
-function inferHeaderAndRows(ws){
-  // Read as rows first
-  const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:""});
-  // Find the row (0..19) with the most non-empty cells; prefer rows with some text
-  let bestIdx = 0, bestScore = -1;
-  const scanLimit = Math.min(rows.length, 20);
-  for(let i=0;i<scanLimit;i++){
-    const r = rows[i] || [];
-    const filled = r.filter(x=>String(x).trim()!=="").length;
-    if(filled > bestScore){ bestScore = filled; bestIdx = i; }
+async function searchCrossrefByTitle({title, firstAuthor, mailto, pubTypeGuess, year, yearTol}){
+  const key = `title::${title.toLowerCase()}::${(firstAuthor||"").toLowerCase()}::${pubTypeGuess||""}::${year||""}::${yearTol||0}`;
+  const useCache = document.getElementById("opt_useCache").checked;
+  if(useCache){
+    const hit = cacheGet(key);
+    if(hit) return hit;
   }
-  const hdr = (rows[bestIdx]||[]).map(x=>normSpace(String(x)));
-  // Build objects for subsequent rows
-  const out = [];
+  const params=new URLSearchParams();
+  params.set("query.title", title);
+  if(firstAuthor) params.set("query.author", firstAuthor);
+  params.set("rows","8");
+  params.set("select","title,DOI,author,issued,publisher,type,ISSN,ISBN,container-title,score");
+  const filters=[];
+  if(pubTypeGuess && /book/i.test(pubTypeGuess)) filters.push("type:book,type:book-chapter");
+  if(year){
+    const y = parseInt(year,10);
+    const tol = Math.max(0, parseInt(yearTol||0,10));
+    const y0 = y - tol, y1 = y + tol;
+    filters.push(`from-pub-date:${y0}-01-01`);
+    filters.push(`until-pub-date:${y1}-12-31`);
+  }
+  if(filters.length) params.set("filter", filters.join(","));
+  const res = await fetch(`https://api.crossref.org/works?${params.toString()}`,{headers:{
+    "User-Agent":`UPES-RnD-Scientist/1.3 (mailto:${mailto||"unknown@example.com"})`,
+    "Accept":"application/json"}});
+  if(!res.ok) return null;
+  const j = await res.json();
+  const items = j?.message?.items || [];
+  if(useCache) cacheSet(key, items);
+  return items;
+}
+
+/*** --- Header detection --- ***/
+function inferHeaderAndRows(ws){
+  const rows = XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+  let bestIdx=0,bestScore=-1;
+  const scanLimit=Math.min(rows.length,20);
+  for(let i=0;i<scanLimit;i++){
+    const r=rows[i]||[];
+    const filled=r.filter(x=>String(x).trim()!=="").length;
+    if(filled>bestScore){bestScore=filled;bestIdx=i;}
+  }
+  const hdr=(rows[bestIdx]||[]).map(x=>normSpace(String(x)));
+  const out=[];
   for(let i=bestIdx+1;i<rows.length;i++){
-    const r = rows[i] || [];
-    const obj = {};
+    const r=rows[i]||[];
+    const obj={};
     for(let c=0;c<hdr.length;c++){
-      const key = hdr[c] || `Col${c+1}`;
-      obj[key] = r[c] ?? "";
+      const key=hdr[c]||`Col${c+1}`;
+      obj[key]=r[c]??"";
     }
-    // ignore fully empty rows
     if(Object.values(obj).some(v=>String(v).trim()!=="")) out.push(obj);
   }
   return {headers: hdr.map(h=>h||"Unnamed"), rows: out};
 }
 
-// UI refs
+/*** --- UI Refs --- ***/
 const fileEl = document.getElementById("file");
 const sheetSel = document.getElementById("sheetSel");
 const mailtoEl = document.getElementById("mailto");
 const statusEl = document.getElementById("status");
+const statsEl = document.getElementById("stats");
 const btnProcess = document.getElementById("btnProcess");
 const btnDownload = document.getElementById("btnDownload");
+const btnExportCache = document.getElementById("btnExportCache");
+const btnClearCache = document.getElementById("btnClearCache");
 const prog = document.getElementById("prog");
 const progWrap = document.getElementById("progWrap");
+const thr = document.getElementById("thr");
+const thrVal = document.getElementById("thrVal");
+const tolYearEl = document.getElementById("tolYear");
+const hdrPreview = document.getElementById("hdrPreview");
+
 const selTitle = document.getElementById("colTitle");
 const selAuthors = document.getElementById("colAuthors");
 const selDOI = document.getElementById("colDOI");
 const selISSN = document.getElementById("colISSN");
 const selISBN = document.getElementById("colISBN");
 const selType = document.getElementById("colType");
+const selYear = document.getElementById("colYear");
 
+thrVal.textContent = `(=${thr.value})`;
+thr.addEventListener("input", ()=> thrVal.textContent=`(=${thr.value})`);
+
+/*** --- Column mapping helpers --- ***/
+function fillSelect(id, headers){
+  const el = document.getElementById(id);
+  el.innerHTML = '<option value="">-- none --</option>' + headers.map(h=>`<option>${h}</option>`).join("");
+}
 function autoMap(){
   sourceTitleGuess = headers.find(h => /source\s*title|book\s*title|journal\s*title|scopus\s*source/i.test(h)) || null;
-  fillSelect("colTitle", headers);
-  fillSelect("colAuthors", headers);
-  fillSelect("colDOI", headers);
-  fillSelect("colISSN", headers);
-  fillSelect("colISBN", headers);
-  fillSelect("colType", headers);
-
+  ["colTitle","colAuthors","colDOI","colISSN","colISBN","colType","colYear"].forEach(id=>fillSelect(id, headers));
   selTitle.value   = headers.find(h=>/^title$/i.test(h)) || headers.find(h=>/chapter|book.*title/i.test(h)) || "";
   selAuthors.value = headers.find(h=>/author/i.test(h)) || "";
   selDOI.value     = headers.find(h=>/^doi$/i.test(h)) || "";
   selISSN.value    = headers.find(h=>/issn/i.test(h)) || "";
   selISBN.value    = headers.find(h=>/isbn/i.test(h)) || "";
   selType.value    = headers.find(h=>/type/i.test(h)) || "";
-
-  showHeaderPreview();
-  statusEl.textContent = `Loaded ${rawRows.length} rows from "${sheetSel.value}". Map columns and click Process.`;
-  btnProcess.disabled = false;
+  selYear.value    = headers.find(h=>/^year$|published|date/i.test(h)) || "";
+  hdrPreview.textContent = headers.length ? `Detected headers: ${headers.join(" | ")}` : "";
 }
+
+/*** --- File handling --- ***/
+fileEl.addEventListener("change", async (e)=>{
+  processed=[]; audit=[]; unmatched=[]; btnDownload.disabled=true; btnProcess.disabled=true;
+  statsEl.textContent="";
+  const f=e.target.files[0];
+  if(!f){ statusEl.textContent="No file loaded."; return; }
+  statusEl.textContent="Reading file…";
+  const data=await f.arrayBuffer();
+  wb=XLSX.read(data,{type:"array"});
+  // sheet list
+  sheetSel.innerHTML = wb.SheetNames.map(n=>`<option>${n}</option>`).join("");
+  sheetSel.value = wb.SheetNames[0];
+  loadActiveSheet();
+});
+sheetSel.addEventListener("change", loadActiveSheet);
 
 function loadActiveSheet(){
   const ws = wb.Sheets[sheetSel.value];
   const {headers: hdr, rows} = inferHeaderAndRows(ws);
-  headers = hdr;
-  rawRows = rows;
+  headers=hdr; rawRows=rows;
   autoMap();
+  statusEl.textContent = `Loaded ${rawRows.length} rows from "${sheetSel.value}". Map columns and click Process.`;
+  btnProcess.disabled=false;
+  btnExportCache.disabled = false;
 }
 
-fileEl.addEventListener("change", async (e)=>{
-  processed = []; btnDownload.disabled = true; btnProcess.disabled = true;
-  const f = e.target.files[0];
-  if(!f){ statusEl.textContent = "No file loaded."; return; }
-  statusEl.textContent = "Reading file…";
-  const data = await f.arrayBuffer();
-  wb = XLSX.read(data, {type:"array"});
-  sheetNames = wb.SheetNames;
-  sheetSel.innerHTML = sheetNames.map(n=>`<option>${n}</option>`).join("");
-  statusEl.textContent = `Workbook loaded. Selected sheet: ${sheetNames[0]}.`;
-  sheetSel.value = sheetNames[0];
-  loadActiveSheet();
+/*** --- Cache ops UI --- ***/
+btnExportCache.addEventListener("click", ()=>{
+  const blob = new Blob([JSON.stringify(getCache(),null,2)],{type:"application/json"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download="crossref_cache.json";
+  a.click();
+});
+btnClearCache.addEventListener("click", ()=>{
+  localStorage.removeItem(CACHE_KEY);
+  alert("Cache cleared.");
 });
 
-sheetSel.addEventListener("change", loadActiveSheet);
+/*** --- Main processing --- ***/
+function yearOkFromIssued(issued, y, tol){
+  if(!y||!issued||!issued["date-parts"]) return false;
+  const cand = issued["date-parts"][0]?.[0];
+  if(typeof cand!=="number") return false;
+  return Math.abs(cand - parseInt(y,10)) <= parseInt(tol,10);
+}
 
 async function processAll(){
   const mailto = mailtoEl.value.trim();
-  const useCrossref = document.getElementById("opt_useCrossref").checked;
-  const fixTitle = document.getElementById("opt_fixTitle").checked;
-  const fixAuthors = document.getElementById("opt_fixAuthors").checked;
-
-  const hTitle = selTitle.value, hAuthors = selAuthors.value, hDOI = selDOI.value;
-  const hISSN = selISSN.value, hISBN = selISBN.value, hType = selType.value;
-
-  if(!hTitle || !hAuthors || !hDOI){ alert("Please map Title, Authors and DOI columns."); return; }
   if(!mailto){ alert("Please enter a contact email for Crossref requests."); return; }
 
-  processed = [];
-  progWrap.style.display = "block"; prog.value = 0; prog.max = rawRows.length;
-  statusEl.textContent = "Processing…";
-  const sleep = ms => new Promise(r=>setTimeout(r,ms));
+  const optCrossref = document.getElementById("opt_useCrossref").checked;
+  const fixTitle = document.getElementById("opt_fixTitle").checked;
+  const fixAuthors = document.getElementById("opt_fixAuthors").checked;
+  const threshold = parseFloat(thr.value);
+  const yearTol = parseInt(tolYearEl.value||"0",10);
+
+  const hTitle=selTitle.value, hAuthors=selAuthors.value, hDOI=selDOI.value;
+  const hISSN=selISSN.value, hISBN=selISBN.value, hType=selType.value, hYear=selYear.value;
+
+  if(!hTitle || !hAuthors || !hDOI){ alert("Please map Title, Authors and DOI columns."); return; }
+
+  processed=[]; audit=[]; unmatched=[];
+  progWrap.style.display="block"; prog.value=0; prog.max=rawRows.length;
+  statusEl.textContent="Processing…";
+
+  let cByDOI=0, cByTitle=0, cUnmatched=0;
 
   for(let i=0;i<rawRows.length;i++){
-    const r = rawRows[i];
-    let title = normSpace(r[hTitle]);
-    let authors = normSpace(r[hAuthors]);
-    let doiRaw = normSpace(r[hDOI]);
-    let issnLocal = normSpace(hISSN ? r[hISSN] : "");
-    let isbnLocal = normSpace(hISBN ? r[hISBN] : "");
-    let typeLocal = normSpace(hType ? r[hType] : "");
+    const r=rawRows[i];
+    let title=normSpace(r[hTitle]), authors=normSpace(r[hAuthors]), doiRaw=normSpace(r[hDOI]);
+    let issnLocal=normSpace(hISSN?r[hISSN]:""), isbnLocal=normSpace(hISBN?r[hISBN]:""), typeLocal=normSpace(hType?r[hType]:""), yearLocal=normSpace(hYear?r[hYear]:"");
     let sourceTitle = sourceTitleGuess ? normSpace(r[sourceTitleGuess]) : "";
 
     const doi = doiNormalize(doiRaw);
-    let pub = "", issn = issnLocal, isbn = isbnLocal, cleanAuthors = authors, cleanTitle = title, pubType = typeLocal;
+    let pub="", issn=issnLocal, isbn=isbnLocal, cleanAuthors=authors, cleanTitle=title, pubType=typeLocal;
+    let matchMethod="none", matchConf=0, matchNote="";
 
     if(fixTitle) cleanTitle = properCaseTitle(title);
     if(fixAuthors) cleanAuthors = normalizeAuthors(authors);
 
-    if(useCrossref && doi){
-      try{
-        const meta = await fetchCrossrefByDOI(doi, mailto);
-        if(meta){
-          if(meta.publisher) pub = meta.publisher;
-          const issnArr = pick(meta.ISSN); if(issnArr.length) issn = joinUnique([issn,...issnArr]);
-          const isbns = pick(meta.ISBN);   if(isbns.length)   isbn = joinUnique([isbn,...isbns]);
-          if(meta.type) pubType = pubType || meta.type;
-          if(fixAuthors && Array.isArray(meta.author) && meta.author.length){
-            const names = meta.author.map(a=>{
-              const given = normSpace(a.given||""); const family = normSpace(a.family||"");
-              let fn = normSpace(`${given} ${family}`.trim());
-              if(!fn && a.name) fn = toFirstLast_one(a.name);
-              return fn.split(" ").map(p=>isAcronym(p)?p:capitalizeWord(p)).join(" ");
-            });
-            cleanAuthors = names.filter(Boolean).join("; ");
-          }
-          if(fixTitle && Array.isArray(meta.title) && meta.title[0]){
-            cleanTitle = properCaseTitle(meta.title[0]);
-          }
-          if(!sourceTitle){
-            const container = (meta["container-title"] && meta["container-title"][0]) ? meta["container-title"][0] : "";
-            sourceTitle = normSpace(container);
+    if(optCrossref){
+      let meta=null;
+      if(doi){
+        meta = await fetchCrossrefByDOI(doi, mailto);
+        await new Promise(r=>setTimeout(r, POLITE_DELAY_MS));
+        if(meta){ matchMethod="doi"; matchConf=1.0; }
+      } else if(title){
+        const items = await searchCrossrefByTitle({
+          title, firstAuthor:firstAuthorSurnameGuess(authors),
+          mailto, pubTypeGuess:typeLocal, year:yearLocal, yearTol:yearTol
+        });
+        await new Promise(r=>setTimeout(r, POLITE_DELAY_MS));
+        if(items && items.length){
+          const q = normTitleForMatch(title);
+          const fa = firstAuthorSurnameGuess(authors);
+          let best=null, bestScore=0, bestYearOk=false, bestAuthorHit=false;
+          items.forEach(it=>{
+            const itTitle = pick(it.title)[0] || "";
+            const t = normTitleForMatch(itTitle);
+            const jac = jaccard(q,t);
+            const aHit = fa && Array.isArray(it.author) ? it.author.some(a=>(a.family||a.name||"").toLowerCase().includes(fa)) : false;
+            const yOk = hYear ? yearOkFromIssued(it.issued, yearLocal, yearTol) : false;
+            const conf = confidenceFromFeatures({jac,authorHit:aHit,yearOk:yOk});
+            if(conf>bestScore){ bestScore=conf; best=it; bestAuthorHit=aHit; bestYearOk=yOk; }
+          });
+          if(best && bestScore>=threshold){
+            meta=best; matchMethod="title"; matchConf=Number(bestScore.toFixed(3));
+            matchNote = `authorMatch=${bestAuthorHit}, yearOk=${bestYearOk}`;
           }
         }
-      }catch(e){}
-      await sleep(220);
+      }
+
+      if(meta){
+        if(meta.publisher) pub=meta.publisher;
+        const issnArr = pick(meta.ISSN); if(issnArr.length) issn=joinUnique([issn,...issnArr]);
+        const isbns = pick(meta.ISBN);   if(isbns.length)   isbn=joinUnique([isbn,...isbns]);
+        if(meta.type) pubType = pubType || meta.type;
+
+        if(fixAuthors && Array.isArray(meta.author) && meta.author.length){
+          const names = meta.author.map(a=>{
+            const given=normSpace(a.given||""), family=normSpace(a.family||"");
+            let fn = normSpace(`${given} ${family}`.trim());
+            if(!fn && a.name) fn = toFirstLast_one(a.name);
+            return fn.split(" ").map(p=>particles.has(p.toLowerCase())?p.toLowerCase():capitalizeWord(p)).join(" ");
+          });
+          cleanAuthors = names.filter(Boolean).join("; ");
+        }
+        if(fixTitle && Array.isArray(meta.title) && meta.title[0]){
+          cleanTitle = properCaseTitle(meta.title[0]);
+        }
+        if(!sourceTitle){
+          const container = (meta["container-title"] && meta["container-title"][0]) ? meta["container-title"][0] : "";
+          sourceTitle = normSpace(container);
+        }
+      }
     }
+
+    if(matchMethod==="doi") cByDOI++;
+    else if(matchMethod==="title") cByTitle++;
+    else cUnmatched++;
 
     processed.push({
       CleanTitle: cleanTitle,
@@ -346,20 +499,72 @@ async function processAll(){
       ISBN: isbn,
       PubType: pubType,
       SourceTitle: sourceTitle,
+      MatchMethod: matchMethod,
+      MatchConfidence: matchConf,
+      MatchNote: matchNote,
       _OriginalTitle: title,
-      _OriginalAuthors: authors
+      _OriginalAuthors: authors,
+      _Year: yearLocal
     });
-    prog.value = i+1;
+
+    audit.push({
+      Row:i+1, Title:title, DOI_in:doiRaw, DOI_norm:doi||"", FirstAuthorGuess:firstAuthorSurnameGuess(authors),
+      Year:yearLocal, Used:matchMethod, Confidence:matchConf, Note:matchNote, Publisher:pub, ISSN:issn, ISBN:isbn
+    });
+
+    if(matchMethod==="none" && !doi) unmatched.push(r);
+
+    prog.value=i+1;
   }
-  statusEl.textContent = `Done. Processed ${processed.length} rows.`;
-  btnDownload.disabled = false;
+
+  statusEl.textContent = `Done. ${processed.length} rows.`;
+  statsEl.innerHTML = `<span class="stat">Matched by DOI: <b>${cByDOI}</b></span>
+                       <span class="stat">Matched by Title: <b>${cByTitle}</b></span>
+                       <span class="stat">Unmatched: <b>${cUnmatched}</b></span>`;
+  btnDownload.disabled=false;
 }
+
+/*** --- Unique authors sheet --- ***/
+function buildUniqueAuthors(){
+  const map = new Map();
+  processed.forEach(r=>{
+    const list = (r.CleanAuthors||"").split(";").map(s=>s.trim()).filter(Boolean);
+    list.forEach(name=>{
+      const key = name.toLowerCase().replace(/[^\w]/g,"");
+      const v = map.get(key) || {CanonicalAuthor:name, Occurrences:0, Variants:new Set()};
+      v.Occurrences += 1;
+      v.Variants.add(name);
+      map.set(key,v);
+    });
+  });
+  return Array.from(map.values()).map(v=>({
+    CanonicalAuthor: v.CanonicalAuthor,
+    Occurrences: v.Occurrences,
+    SeenVariants: Array.from(v.Variants).sort().join("; ")
+  })).sort((a,b)=>a.CanonicalAuthor.localeCompare(b.CanonicalAuthor));
+}
+
+/*** --- Download --- ***/
 function downloadXLSX(){
-  const ws = XLSX.utils.json_to_sheet(processed);
   const wb2 = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb2, ws, "Cleaned");
-  XLSX.writeFile(wb2, "books_chapters_cleaned.xlsx");
+  const ws1 = XLSX.utils.json_to_sheet(processed);
+  XLSX.utils.book_append_sheet(wb2, ws1, "Cleaned");
+
+  const ws2 = XLSX.utils.json_to_sheet(buildUniqueAuthors());
+  XLSX.utils.book_append_sheet(wb2, ws2, "UniqueAuthors");
+
+  if(unmatched.length){
+    const ws3 = XLSX.utils.json_to_sheet(unmatched);
+    XLSX.utils.book_append_sheet(wb2, ws3, "Unmatched");
+  }
+  if(audit.length){
+    const ws4 = XLSX.utils.json_to_sheet(audit);
+    XLSX.utils.book_append_sheet(wb2, ws4, "Audit");
+  }
+  XLSX.writeFile(wb2, "books_chapters_enriched_clean.xlsx");
 }
+
+/*** --- Wire buttons --- ***/
 document.getElementById("btnProcess").addEventListener("click", processAll);
 document.getElementById("btnDownload").addEventListener("click", downloadXLSX);
 </script>

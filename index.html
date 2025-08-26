@@ -73,7 +73,7 @@
       <div class="k">
         <label>Title-match threshold <span id="thrVal" class="muted"></span></label>
         <input id="thr" type="range" min="0.50" max="0.90" step="0.01" value="0.68" />
-        <div class="muted">Used when DOI is missing.</div>
+        <div class="muted">Used when DOI is missing (title search).</div>
       </div>
       <div class="k">
         <label>Year tolerance (±)</label>
@@ -106,11 +106,12 @@
     <b>Outputs</b>
     <div class="muted">
       <ul>
-        <li><b>Cleaned</b> — CleanTitle, CleanAuthors, DOI, Publisher, ISSN, ISBN, PubType, SourceTitle, MatchMethod, MatchConfidence, MatchNote, IsDuplicate, DupGroupSize</li>
+        <li><b>Cleaned</b> — CleanTitle, CleanAuthors, DOI, <b>DOISource</b>, Publisher, ISSN, ISBN, PubType, SourceTitle, MatchMethod, MatchConfidence, MatchNote, IsDuplicate, DupGroupSize</li>
         <li><b>UniqueAuthors</b> — CanonicalAuthor, Occurrences, SeenVariants</li>
         <li><b>Duplicates</b> — only duplicate rows</li>
         <li><b>Deduped</b> — first row per duplicate group</li>
-        <li><b>Audit</b> — per-row enrichment details (for QA)</li>
+        <li><b>Unmatched</b> — rows with no DOI and no confident title match</li>
+        <li><b>Audit</b> — per-row enrichment details (includes DOI_in/DOI_out)</li>
       </ul>
     </div>
   </div>
@@ -118,8 +119,8 @@
 
 <script>
 /* ================================
-   Scientist-Programmer core (final)
-   — DOI+subtitle title fix + dedupe —
+   Enrich/Backfill DOI + ISSN/ISBN
+   (with dedupe and audit)
    ================================ */
 
 let wb=null, rawRows=[], headers=[], processed=[], audit=[], unmatched=[];
@@ -127,7 +128,7 @@ let sourceTitleGuess=null;
 
 /*** --- Config --- ***/
 const POLITE_DELAY_MS = 220;  // Crossref pacing
-const CACHE_KEY = "crCache_v4";
+const CACHE_KEY = "crCache_v5";
 
 /*** --- Utilities --- ***/
 const stopwords = new Set([
@@ -235,7 +236,7 @@ async function fetchCrossrefByDOI(doi, mailto){
     const hit = cacheGet(key); if(hit) return hit;
   }
   const res = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`,{
-    headers:{ "User-Agent":`UPES-RnD-Scientist/1.5 (mailto:${mailto||"unknown@example.com"})`, "Accept":"application/json" }
+    headers:{ "User-Agent":`UPES-RnD-Scientist/1.6 (mailto:${mailto||"unknown@example.com"})`, "Accept":"application/json" }
   });
   if(!res.ok) return null;
   const j = await res.json();
@@ -263,7 +264,7 @@ async function searchCrossrefByTitle({title, firstAuthor, mailto, pubTypeGuess, 
   }
   if(filters.length) params.set("filter", filters.join(","));
   const res = await fetch(`https://api.crossref.org/works?${params.toString()}`,{
-    headers:{ "User-Agent":`UPES-RnD-Scientist/1.5 (mailto:${mailto||"unknown@example.com"})`, "Accept":"application/json" }
+    headers:{ "User-Agent":`UPES-RnD-Scientist/1.6 (mailto:${mailto||"unknown@example.com"})`, "Accept":"application/json" }
   });
   if(!res.ok) return [];
   const j = await res.json();
@@ -277,7 +278,6 @@ function buildCrossrefFullTitle(meta){
   const main = pick(meta.title)[0] || "";
   const sub  = pick(meta.subtitle)[0] || "";
   if(main && sub){
-    // avoid double colon if main already ends with ":" or " -"
     const sep = /[:\-]\s*$/.test(main) ? " " : ": ";
     return main + sep + sub;
   }
@@ -363,7 +363,6 @@ fileEl.addEventListener("change", async (e)=>{
   statusEl.textContent="Reading file…";
   const data=await f.arrayBuffer();
   wb=XLSX.read(data,{type:"array"});
-  // sheet list
   sheetSel.innerHTML = wb.SheetNames.map(n=>`<option>${n}</option>`).join("");
   sheetSel.value = wb.SheetNames[0];
   loadActiveSheet();
@@ -430,9 +429,13 @@ async function processAll(){
     let issnLocal=normSpace(hISSN?r[hISSN]:""), isbnLocal=normSpace(hISBN?r[hISBN]:""), typeLocal=normSpace(hType?r[hType]:""), yearLocal=normSpace(hYear?r[hYear]:"");
     let sourceTitle = sourceTitleGuess ? normSpace(r[sourceTitleGuess]) : "";
 
-    const doi = doiNormalize(doiRaw);
+    const doiIn = doiNormalize(doiRaw);
     let pub="", issn=issnLocal, isbn=isbnLocal, cleanAuthors=authors, cleanTitle=title, pubType=typeLocal;
     let matchMethod="none", matchConf=0, matchNote="";
+
+    // track final DOI + where it came from
+    let doiFinal  = doiIn || doiRaw;
+    let doiSource = doiIn ? "input" : "";
 
     if(fixTitle) cleanTitle = properCaseTitle(title);
     if(fixAuthors) cleanAuthors = normalizeAuthors(authors);
@@ -440,8 +443,8 @@ async function processAll(){
     if(optCrossref){
       let meta=null;
 
-      if(doi){
-        meta = await fetchCrossrefByDOI(doi, mailto);
+      if(doiIn){
+        meta = await fetchCrossrefByDOI(doiIn, mailto);
         await new Promise(r=>setTimeout(r, POLITE_DELAY_MS));
         if(meta){ matchMethod="doi"; matchConf=1.0; }
       } else if(title){
@@ -473,12 +476,18 @@ async function processAll(){
       }
 
       if(meta){
+        // Backfill missing DOI from Crossref match
+        if(!doiFinal && meta.DOI){
+          doiFinal  = meta.DOI;
+          doiSource = (matchMethod === "title") ? "title-match" : "crossref";
+        }
+
         if(meta.publisher) pub=meta.publisher;
         const issnArr = pick(meta.ISSN); if(issnArr.length) issn=joinUnique([issn,...issnArr]);
         const isbns = pick(meta.ISBN);   if(isbns.length)   isbn=joinUnique([isbn,...isbns]);
         if(meta.type) pubType = pubType || meta.type;
 
-        // ---- CleanAuthors from Crossref (if available)
+        // Authors from Crossref (if available)
         if(fixAuthors && Array.isArray(meta.author) && meta.author.length){
           const names = meta.author.map(a=>{
             const given=normSpace(a.given||""), family=normSpace(a.family||"");
@@ -488,13 +497,11 @@ async function processAll(){
           });
           cleanAuthors = names.filter(Boolean).join("; ");
         }
-
-        // ---- CleanTitle from Crossref (title + subtitle) if preferred
+        // Title from Crossref (title + subtitle) if preferred
         if(preferDOITitle){
           const full = buildCrossrefFullTitle(meta);
           if(full) cleanTitle = fixTitle ? properCaseTitle(full) : full;
         }
-
         // Container title
         if(!sourceTitle){
           const container = (meta["container-title"] && meta["container-title"][0]) ? meta["container-title"][0] : "";
@@ -510,7 +517,8 @@ async function processAll(){
     processed.push({
       CleanTitle: cleanTitle,
       CleanAuthors: cleanAuthors,
-      DOI: doi || doiRaw,
+      DOI: doiNormalize(doiFinal),     // final DOI (backfilled if needed)
+      DOISource: doiSource,            // "input" | "title-match" | ""
       Publisher: pub,
       ISSN: issn,
       ISBN: isbn,
@@ -525,11 +533,14 @@ async function processAll(){
     });
 
     audit.push({
-      Row:i+1, Title:title, DOI_in:doiRaw, DOI_norm:doi||"", FirstAuthorGuess:firstAuthorSurnameGuess(authors),
-      Year:yearLocal, Used:matchMethod, Confidence:matchConf, Note:matchNote, Publisher:pub, ISSN:issn, ISBN:isbn
+      Row:i+1, Title:title, DOI_in:doiRaw, DOI_norm:doiIn||"",
+      DOI_out: doiNormalize(doiFinal),
+      FirstAuthorGuess:firstAuthorSurnameGuess(authors),
+      Year:yearLocal, Used:matchMethod, Confidence:matchConf, Note:matchNote,
+      Publisher:pub, ISSN:issn, ISBN:isbn
     });
 
-    if(matchMethod==="none" && !doi) unmatched.push(r);
+    if(matchMethod==="none" && !doiIn) unmatched.push(r);
     prog.value=i+1;
   }
 

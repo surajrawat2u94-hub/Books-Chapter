@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Books & Chapters — Enrich (DOI/Title) · Clean · Audit</title>
+<title>Books & Chapters — Enrich (DOI/Title) · Clean · Audit · Review · ROR</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{--bg:#0b1020;--panel:#121833;--card:#0f152a;--line:#1f2747;--ink:#e9eef9;--mut:#9fb0e1;--accent:#1463ff}
@@ -27,11 +27,16 @@
   .kv .k{min-width:170px}
   .stat{display:inline-block;margin-right:14px;font-size:12px;color:var(--mut)}
   .preview{font-size:12px;color:var(--mut);margin-top:6px}
+  .cand{border:1px solid #2a355f;border-radius:10px;padding:10px;margin:8px 0;background:#0b1130}
+  .cand h4{margin:0 0 6px 0;font-size:14px}
+  .flex{display:flex;gap:10px;align-items:center}
+  .space{display:flex;justify-content:space-between;gap:10px;align-items:center}
+  .nowrap{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Books & Chapters — Enrich (DOI/Title), Clean, Audit</h1>
+  <h1>Books & Chapters — Enrich (DOI/Title), Clean, Audit, Review, ROR</h1>
 
   <!-- Load + sheet -->
   <div class="card">
@@ -85,6 +90,26 @@
     </div>
   </div>
 
+  <!-- ROR / Affiliation filters -->
+  <div class="card">
+    <div class="row">
+      <div>
+        <label><b>Affiliation keywords</b> (comma-separated)</label>
+        <input id="affKeys" type="text" placeholder="UPES, University of Petroleum and Energy Studies, Dehradun" />
+        <div class="muted">Boosts matches where author affiliations contain these terms.</div>
+      </div>
+      <div>
+        <label><b>ROR IDs</b> (comma-separated)</label>
+        <input id="rorIds" type="text" placeholder="05dxps055, 03yrm5c26" />
+        <div class="muted">Boosts matches containing these RORs; format can be bare ID or full https://ror.org/…</div>
+      </div>
+    </div>
+    <div class="kv" style="margin-top:6px">
+      <span class="pill"><input id="cbStrictAff" type="checkbox" /> Require affiliation hit (drop candidates without a match)</span>
+      <span class="pill"><input id="cbQueryAff" type="checkbox" checked /> Hint Crossref with affiliation in query</span>
+    </div>
+  </div>
+
   <!-- Options + actions -->
   <div class="card">
     <div class="kv">
@@ -93,15 +118,54 @@
       <span class="pill"><input id="opt_useCrossref" type="checkbox" checked /> Enrich from Crossref</span>
       <span class="pill"><input id="opt_useCache" type="checkbox" checked /> Cache lookups (localStorage)</span>
     </div>
-    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:10px">
-      <button id="btnExportCache" class="btn secondary" disabled>Export cache</button>
-      <button id="btnClearCache" class="btn secondary">Clear cache</button>
-      <button id="btnProcess" class="btn" disabled>Process</button>
-      <button id="btnDownload" class="btn secondary" disabled>Download XLSX</button>
+    <div class="space" style="margin-top:10px">
+      <div>
+        <span id="stats" class="preview"></span>
+      </div>
+      <div class="flex">
+        <button id="btnOpenReview" class="btn secondary" disabled>Open Review Queue</button>
+        <button id="btnExportCache" class="btn secondary" disabled>Export cache</button>
+        <button id="btnClearCache" class="btn secondary">Clear cache</button>
+        <button id="btnProcess" class="btn" disabled>Process</button>
+        <button id="btnDownload" class="btn secondary" disabled>Download XLSX</button>
+      </div>
     </div>
     <div id="status" class="muted" style="margin-top:8px">No file loaded.</div>
     <div id="progWrap" style="display:none;margin-top:8px"><progress id="prog" value="0" max="100"></progress></div>
-    <div id="stats" class="preview"></div>
+  </div>
+
+  <!-- Review Queue -->
+  <div class="card" id="reviewCard" style="display:none">
+    <div class="space">
+      <div><b>Review Queue</b> — <span id="revCounter" class="muted"></span></div>
+      <div class="flex">
+        <button id="revPrev" class="btn secondary">Prev</button>
+        <button id="revNext" class="btn secondary">Next</button>
+      </div>
+    </div>
+    <div id="revContext" class="preview" style="margin:6px 0 10px 0"></div>
+    <div class="row">
+      <div>
+        <label>Edit search (title)</label>
+        <input id="revSearchTitle" type="text" />
+      </div>
+      <div>
+        <label>First author (optional)</label>
+        <input id="revSearchAuthor" type="text" />
+      </div>
+    </div>
+    <div class="flex" style="margin-top:8px">
+      <button id="revSearch" class="btn secondary">Search again</button>
+      <div class="muted">Uses your filters (year tolerance, ROR, affiliation)</div>
+    </div>
+    <div id="revCands" style="margin-top:10px"></div>
+    <div class="space" style="margin-top:10px">
+      <div class="muted nowrap">Pick a candidate then click Apply. Or Skip to leave this row unchanged.</div>
+      <div class="flex">
+        <button id="revApply" class="btn">Apply</button>
+        <button id="revSkip" class="btn secondary">Skip</button>
+      </div>
+    </div>
   </div>
 
   <div class="card">
@@ -120,17 +184,16 @@
 
 <script>
 /* ================================
-   Scientist-Programmer Edition
-   — robust matching, audit trail,
-   caching, confidence scoring —
+   Scientist-Programmer + Review + ROR
    ================================ */
 
 let wb=null, rawRows=[], headers=[], processed=[], audit=[], unmatched=[];
 let sourceTitleGuess=null;
+let reviewItems=[], reviewIndex=0, reviewSelection=-1;
 
 /*** --- Config --- ***/
-const POLITE_DELAY_MS = 220;  // Crossref-friendly pacing
-const CACHE_KEY = "crCache_v2"; // localStorage key
+const POLITE_DELAY_MS = 220;             // Crossref-friendly pacing
+const CACHE_KEY = "crCache_v3";          // localStorage key
 
 /*** --- Utilities --- ***/
 const stopwords = new Set([
@@ -163,8 +226,7 @@ function toFirstLast_one(name){
   if(name.includes(",")){
     const [last,rest]=name.split(",",2);
     let parts = normSpace(`${rest||""} ${last}`).split(" ").filter(Boolean);
-    // keep particles lower-case
-    parts = parts.map((p,i)=> particles.has(p.toLowerCase()) ? p.toLowerCase() : capitalizeWord(p));
+    parts = parts.map((p)=> particles.has(p.toLowerCase()) ? p.toLowerCase() : capitalizeWord(p));
     return parts.join(" ");
   }
   return name.split(" ").map(p=>particles.has(p.toLowerCase())?p.toLowerCase():capitalizeWord(p)).join(" ");
@@ -208,77 +270,104 @@ function jaccard(a,b){
   const uni=new Set([...A,...B]).size||1;
   return inter/uni;
 }
-function confidenceFromFeatures({jac, authorHit, yearOk}){
-  // base on Jaccard, gentle bonuses
+function confidenceFromFeatures({jac, authorHit, yearOk, affHit, rorHit}){
   let s = jac;
   if(authorHit) s += 0.12;
   if(yearOk)    s += 0.08;
+  if(affHit)    s += 0.08;
+  if(rorHit)    s += 0.10;
   return Math.max(0, Math.min(1, s));
 }
 
+/*** --- Affiliation helpers --- ***/
+function splitCsvInput(val){
+  return normSpace(val).split(",").map(x=>x.trim()).filter(Boolean);
+}
+function presentRORs(raw){
+  // normalize to bare IDs (last 9 chars) or keep as-is if already short
+  return splitCsvInput(raw).map(r=>{
+    const m = r.match(/([0-9a-hjkmnp-z]{9})$/i);
+    return m ? m[1].toLowerCase() : r.toLowerCase();
+  });
+}
+function affHitInItem(item, keys){
+  if(!keys.length || !Array.isArray(item.author)) return false;
+  const K = keys.map(k=>k.toLowerCase());
+  return item.author.some(a => Array.isArray(a.affiliation) && a.affiliation.some(af => {
+    const name = (af.name||"").toLowerCase();
+    return K.some(k => name.includes(k));
+  }));
+}
+function rorHitInItem(item, rorIds){
+  if(!rorIds.length || !Array.isArray(item.author)) return false;
+  return item.author.some(a => Array.isArray(a.affiliation) && a.affiliation.some(af => {
+    const id = (af.id||"").toLowerCase();
+    const name = (af.name||"").toLowerCase();
+    return rorIds.some(r => id.endsWith(r) || name.includes(r)); // tolerate missing id by name fallback
+  }));
+}
+
 /*** --- Cache --- ***/
-function getCache(){
-  if(!localStorage) return {};
-  try{ return JSON.parse(localStorage.getItem(CACHE_KEY)||"{}"); }catch{ return {}; }
-}
-function setCache(obj){
-  if(!localStorage) return;
-  try{ localStorage.setItem(CACHE_KEY, JSON.stringify(obj)); }catch{}
-}
-function cacheGet(key){ const c=getCache(); return c[key]; }
-function cacheSet(key,val){ const c=getCache(); c[key]=val; setCache(c); }
+function getCache(){ try{ return JSON.parse(localStorage.getItem(CACHE_KEY)||"{}"); }catch{ return {}; } }
+function setCache(o){ try{ localStorage.setItem(CACHE_KEY, JSON.stringify(o)); }catch{} }
+function cacheGet(k){ return getCache()[k]; }
+function cacheSet(k,v){ const c=getCache(); c[k]=v; setCache(c); }
 
 /*** --- Crossref API --- ***/
 async function fetchCrossrefByDOI(doi, mailto){
   const key = `doi::${doi.toLowerCase()}`;
-  const useCache = document.getElementById("opt_useCache").checked;
-  if(useCache){
-    const hit = cacheGet(key);
-    if(hit) return hit;
+  if(document.getElementById("opt_useCache").checked){
+    const hit = cacheGet(key); if(hit) return hit;
   }
-  const url = `https://api.crossref.org/works/${encodeURIComponent(doi)}`;
-  const res = await fetch(url,{headers:{
-    "User-Agent":`UPES-RnD-Scientist/1.3 (mailto:${mailto||"unknown@example.com"})`,
-    "Accept":"application/json"}});
+  const res = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`,{
+    headers:{
+      "User-Agent":`UPES-RnD-Scientist/1.4 (mailto:${mailto||"unknown@example.com"})`,
+      "Accept":"application/json"
+    }
+  });
   if(!res.ok) return null;
   const j = await res.json();
   const msg = j?.message||null;
-  if(useCache && msg) cacheSet(key,msg);
+  if(msg && document.getElementById("opt_useCache").checked) cacheSet(key,msg);
   return msg;
 }
-async function searchCrossrefByTitle({title, firstAuthor, mailto, pubTypeGuess, year, yearTol}){
-  const key = `title::${title.toLowerCase()}::${(firstAuthor||"").toLowerCase()}::${pubTypeGuess||""}::${year||""}::${yearTol||0}`;
-  const useCache = document.getElementById("opt_useCache").checked;
-  if(useCache){
-    const hit = cacheGet(key);
-    if(hit) return hit;
+
+async function searchCrossrefByTitle({title, firstAuthor, mailto, pubTypeGuess, year, yearTol, affKeys, rorIds, hintQueryAff}){
+  const affStr = affKeys.join(" ");
+  const key = `title::${title.toLowerCase()}::${(firstAuthor||"").toLowerCase()}::${pubTypeGuess||""}::${year||""}::${yearTol||0}::${affStr}::${rorIds.join("|")}`;
+  if(document.getElementById("opt_useCache").checked){
+    const hit = cacheGet(key); if(hit) return hit;
   }
   const params=new URLSearchParams();
   params.set("query.title", title);
   if(firstAuthor) params.set("query.author", firstAuthor);
-  params.set("rows","8");
+  if(hintQueryAff && affStr) params.set("query.affiliation", affStr);
+  params.set("rows","10");
   params.set("select","title,DOI,author,issued,publisher,type,ISSN,ISBN,container-title,score");
+
   const filters=[];
   if(pubTypeGuess && /book/i.test(pubTypeGuess)) filters.push("type:book,type:book-chapter");
   if(year){
-    const y = parseInt(year,10);
-    const tol = Math.max(0, parseInt(yearTol||0,10));
-    const y0 = y - tol, y1 = y + tol;
-    filters.push(`from-pub-date:${y0}-01-01`);
-    filters.push(`until-pub-date:${y1}-12-31`);
+    const y = parseInt(year,10), tol = Math.max(0, parseInt(yearTol||0,10));
+    filters.push(`from-pub-date:${y - tol}-01-01`);
+    filters.push(`until-pub-date:${y + tol}-12-31`);
   }
   if(filters.length) params.set("filter", filters.join(","));
-  const res = await fetch(`https://api.crossref.org/works?${params.toString()}`,{headers:{
-    "User-Agent":`UPES-RnD-Scientist/1.3 (mailto:${mailto||"unknown@example.com"})`,
-    "Accept":"application/json"}});
-  if(!res.ok) return null;
+
+  const res = await fetch(`https://api.crossref.org/works?${params.toString()}`,{
+    headers:{
+      "User-Agent":`UPES-RnD-Scientist/1.4 (mailto:${mailto||"unknown@example.com"})`,
+      "Accept":"application/json"
+    }
+  });
+  if(!res.ok) return [];
   const j = await res.json();
   const items = j?.message?.items || [];
-  if(useCache) cacheSet(key, items);
+  if(document.getElementById("opt_useCache").checked) cacheSet(key, items);
   return items;
 }
 
-/*** --- Header detection --- ***/
+/*** --- Header detection --- */
 function inferHeaderAndRows(ws){
   const rows = XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
   let bestIdx=0,bestScore=-1;
@@ -312,12 +401,19 @@ const btnProcess = document.getElementById("btnProcess");
 const btnDownload = document.getElementById("btnDownload");
 const btnExportCache = document.getElementById("btnExportCache");
 const btnClearCache = document.getElementById("btnClearCache");
+const btnOpenReview = document.getElementById("btnOpenReview");
 const prog = document.getElementById("prog");
 const progWrap = document.getElementById("progWrap");
 const thr = document.getElementById("thr");
 const thrVal = document.getElementById("thrVal");
 const tolYearEl = document.getElementById("tolYear");
 const hdrPreview = document.getElementById("hdrPreview");
+const affKeysEl = document.getElementById("affKeys");
+const rorIdsEl = document.getElementById("rorIds");
+const cbStrictAff = document.getElementById("cbStrictAff");
+const cbQueryAff = document.getElementById("cbQueryAff");
+thrVal.textContent = `(=${thr.value})`;
+thr.addEventListener("input", ()=> thrVal.textContent=`(=${thr.value})`);
 
 const selTitle = document.getElementById("colTitle");
 const selAuthors = document.getElementById("colAuthors");
@@ -327,10 +423,7 @@ const selISBN = document.getElementById("colISBN");
 const selType = document.getElementById("colType");
 const selYear = document.getElementById("colYear");
 
-thrVal.textContent = `(=${thr.value})`;
-thr.addEventListener("input", ()=> thrVal.textContent=`(=${thr.value})`);
-
-/*** --- Column mapping helpers --- ***/
+/*** --- Mapping helpers --- ***/
 function fillSelect(id, headers){
   const el = document.getElementById(id);
   el.innerHTML = '<option value="">-- none --</option>' + headers.map(h=>`<option>${h}</option>`).join("");
@@ -350,14 +443,13 @@ function autoMap(){
 
 /*** --- File handling --- ***/
 fileEl.addEventListener("change", async (e)=>{
-  processed=[]; audit=[]; unmatched=[]; btnDownload.disabled=true; btnProcess.disabled=true;
+  processed=[]; audit=[]; unmatched=[]; reviewItems=[]; btnDownload.disabled=true; btnProcess.disabled=true; btnOpenReview.disabled=true;
   statsEl.textContent="";
   const f=e.target.files[0];
   if(!f){ statusEl.textContent="No file loaded."; return; }
   statusEl.textContent="Reading file…";
   const data=await f.arrayBuffer();
   wb=XLSX.read(data,{type:"array"});
-  // sheet list
   sheetSel.innerHTML = wb.SheetNames.map(n=>`<option>${n}</option>`).join("");
   sheetSel.value = wb.SheetNames[0];
   loadActiveSheet();
@@ -371,10 +463,10 @@ function loadActiveSheet(){
   autoMap();
   statusEl.textContent = `Loaded ${rawRows.length} rows from "${sheetSel.value}". Map columns and click Process.`;
   btnProcess.disabled=false;
-  btnExportCache.disabled = false;
+  btnExportCache.disabled=false;
 }
 
-/*** --- Cache ops UI --- ***/
+/*** --- Cache ops --- ***/
 btnExportCache.addEventListener("click", ()=>{
   const blob = new Blob([JSON.stringify(getCache(),null,2)],{type:"application/json"});
   const a=document.createElement("a");
@@ -387,7 +479,7 @@ btnClearCache.addEventListener("click", ()=>{
   alert("Cache cleared.");
 });
 
-/*** --- Main processing --- ***/
+/*** --- Matching helpers --- ***/
 function yearOkFromIssued(issued, y, tol){
   if(!y||!issued||!issued["date-parts"]) return false;
   const cand = issued["date-parts"][0]?.[0];
@@ -395,6 +487,7 @@ function yearOkFromIssued(issued, y, tol){
   return Math.abs(cand - parseInt(y,10)) <= parseInt(tol,10);
 }
 
+/*** --- Process (with Review build) --- ***/
 async function processAll(){
   const mailto = mailtoEl.value.trim();
   if(!mailto){ alert("Please enter a contact email for Crossref requests."); return; }
@@ -407,14 +500,18 @@ async function processAll(){
 
   const hTitle=selTitle.value, hAuthors=selAuthors.value, hDOI=selDOI.value;
   const hISSN=selISSN.value, hISBN=selISBN.value, hType=selType.value, hYear=selYear.value;
-
   if(!hTitle || !hAuthors || !hDOI){ alert("Please map Title, Authors and DOI columns."); return; }
 
-  processed=[]; audit=[]; unmatched=[];
+  const affKeys = splitCsvInput(affKeysEl.value);
+  const rorIds  = presentRORs(rorIdsEl.value);
+  const strictAff = cbStrictAff.checked;
+  const hintQueryAff = cbQueryAff.checked;
+
+  processed=[]; audit=[]; unmatched=[]; reviewItems=[]; reviewIndex=0;
   progWrap.style.display="block"; prog.value=0; prog.max=rawRows.length;
   statusEl.textContent="Processing…";
 
-  let cByDOI=0, cByTitle=0, cUnmatched=0;
+  let cByDOI=0, cByTitle=0, cQueued=0, cUnmatched=0;
 
   for(let i=0;i<rawRows.length;i++){
     const r=rawRows[i];
@@ -431,6 +528,7 @@ async function processAll(){
 
     if(optCrossref){
       let meta=null;
+
       if(doi){
         meta = await fetchCrossrefByDOI(doi, mailto);
         await new Promise(r=>setTimeout(r, POLITE_DELAY_MS));
@@ -438,26 +536,46 @@ async function processAll(){
       } else if(title){
         const items = await searchCrossrefByTitle({
           title, firstAuthor:firstAuthorSurnameGuess(authors),
-          mailto, pubTypeGuess:typeLocal, year:yearLocal, yearTol:yearTol
+          mailto, pubTypeGuess:typeLocal, year:yearLocal, yearTol,
+          affKeys, rorIds, hintQueryAff
         });
         await new Promise(r=>setTimeout(r, POLITE_DELAY_MS));
-        if(items && items.length){
-          const q = normTitleForMatch(title);
-          const fa = firstAuthorSurnameGuess(authors);
-          let best=null, bestScore=0, bestYearOk=false, bestAuthorHit=false;
-          items.forEach(it=>{
-            const itTitle = pick(it.title)[0] || "";
-            const t = normTitleForMatch(itTitle);
-            const jac = jaccard(q,t);
-            const aHit = fa && Array.isArray(it.author) ? it.author.some(a=>(a.family||a.name||"").toLowerCase().includes(fa)) : false;
-            const yOk = hYear ? yearOkFromIssued(it.issued, yearLocal, yearTol) : false;
-            const conf = confidenceFromFeatures({jac,authorHit:aHit,yearOk:yOk});
-            if(conf>bestScore){ bestScore=conf; best=it; bestAuthorHit=aHit; bestYearOk=yOk; }
+
+        const q = normTitleForMatch(title);
+        const fa = firstAuthorSurnameGuess(authors);
+        let best=null, bestScore=0, bestYearOk=false, bestAuthorHit=false, bestAff=false, bestRor=false;
+
+        const scored = items.map(it=>{
+          const itTitle = pick(it.title)[0] || "";
+          const t = normTitleForMatch(itTitle);
+          const jac = jaccard(q,t);
+          const aHit = fa && Array.isArray(it.author) ? it.author.some(a=>(a.family||a.name||"").toLowerCase().includes(fa)) : false;
+          const yOk = hYear ? yearOkFromIssued(it.issued, yearLocal, yearTol) : false;
+          const aHitAff = affHitInItem(it, affKeys);
+          const rHit = rorHitInItem(it, rorIds);
+          const conf = confidenceFromFeatures({jac,authorHit:aHit,yearOk:yOk,affHit:aHitAff,rorHit:rHit});
+          return {it, conf, jac, aHit, yOk, aHitAff, rHit};
+        }).filter(sc => !strictAff || sc.aHitAff || sc.rHit)
+          .sort((a,b)=>b.conf-a.conf);
+
+        if(scored.length){
+          const top = scored[0];
+          best = top.it; bestScore = top.conf; bestYearOk = top.yOk; bestAuthorHit = top.aHit; bestAff=top.aHitAff; bestRor=top.rHit;
+        }
+
+        if(best && bestScore>=threshold){
+          meta=best; matchMethod="title"; matchConf=Number(bestScore.toFixed(3));
+          matchNote = `authorMatch=${bestAuthorHit}, yearOk=${bestYearOk}, affHit=${bestAff}, rorHit=${bestRor}`;
+        } else if(scored.length){
+          // queue for review
+          reviewItems.push({
+            rowIndex:i, original:{title, authors, year:yearLocal},
+            candidates: scored.slice(0,6) // top 6
           });
-          if(best && bestScore>=threshold){
-            meta=best; matchMethod="title"; matchConf=Number(bestScore.toFixed(3));
-            matchNote = `authorMatch=${bestAuthorHit}, yearOk=${bestYearOk}`;
-          }
+          cQueued++;
+          matchMethod="review";
+          matchConf=0;
+          matchNote="Queued for review";
         }
       }
 
@@ -488,6 +606,7 @@ async function processAll(){
 
     if(matchMethod==="doi") cByDOI++;
     else if(matchMethod==="title") cByTitle++;
+    else if(matchMethod==="review") {/* queued */}
     else cUnmatched++;
 
     processed.push({
@@ -513,18 +632,19 @@ async function processAll(){
     });
 
     if(matchMethod==="none" && !doi) unmatched.push(r);
-
     prog.value=i+1;
   }
 
   statusEl.textContent = `Done. ${processed.length} rows.`;
-  statsEl.innerHTML = `<span class="stat">Matched by DOI: <b>${cByDOI}</b></span>
-                       <span class="stat">Matched by Title: <b>${cByTitle}</b></span>
-                       <span class="stat">Unmatched: <b>${cUnmatched}</b></span>`;
+  statsEl.innerHTML = `<span class="stat">By DOI: <b>${processed.filter(r=>r.MatchMethod==="doi").length}</b></span>
+                       <span class="stat">By Title: <b>${processed.filter(r=>r.MatchMethod==="title").length}</b></span>
+                       <span class="stat">Queued for Review: <b>${reviewItems.length}</b></span>
+                       <span class="stat">Unmatched: <b>${processed.filter(r=>r.MatchMethod==="none").length}</b></span>`;
   btnDownload.disabled=false;
+  btnOpenReview.disabled = reviewItems.length===0;
 }
 
-/*** --- Unique authors sheet --- ***/
+/*** --- Unique authors --- ***/
 function buildUniqueAuthors(){
   const map = new Map();
   processed.forEach(r=>{
@@ -532,9 +652,7 @@ function buildUniqueAuthors(){
     list.forEach(name=>{
       const key = name.toLowerCase().replace(/[^\w]/g,"");
       const v = map.get(key) || {CanonicalAuthor:name, Occurrences:0, Variants:new Set()};
-      v.Occurrences += 1;
-      v.Variants.add(name);
-      map.set(key,v);
+      v.Occurrences += 1; v.Variants.add(name); map.set(key,v);
     });
   });
   return Array.from(map.values()).map(v=>({
@@ -547,24 +665,174 @@ function buildUniqueAuthors(){
 /*** --- Download --- ***/
 function downloadXLSX(){
   const wb2 = XLSX.utils.book_new();
-  const ws1 = XLSX.utils.json_to_sheet(processed);
-  XLSX.utils.book_append_sheet(wb2, ws1, "Cleaned");
-
-  const ws2 = XLSX.utils.json_to_sheet(buildUniqueAuthors());
-  XLSX.utils.book_append_sheet(wb2, ws2, "UniqueAuthors");
-
-  if(unmatched.length){
-    const ws3 = XLSX.utils.json_to_sheet(unmatched);
-    XLSX.utils.book_append_sheet(wb2, ws3, "Unmatched");
-  }
-  if(audit.length){
-    const ws4 = XLSX.utils.json_to_sheet(audit);
-    XLSX.utils.book_append_sheet(wb2, ws4, "Audit");
-  }
+  XLSX.utils.book_append_sheet(wb2, XLSX.utils.json_to_sheet(processed), "Cleaned");
+  XLSX.utils.book_append_sheet(wb2, XLSX.utils.json_to_sheet(buildUniqueAuthors()), "UniqueAuthors");
+  if(unmatched.length) XLSX.utils.book_append_sheet(wb2, XLSX.utils.json_to_sheet(unmatched), "Unmatched");
+  if(audit.length)     XLSX.utils.json_to_sheet(audit);
+  XLSX.utils.book_append_sheet(wb2, XLSX.utils.json_to_sheet(audit), "Audit");
   XLSX.writeFile(wb2, "books_chapters_enriched_clean.xlsx");
 }
 
-/*** --- Wire buttons --- ***/
+/*** --- Review Queue UI --- ***/
+const reviewCard = document.getElementById("reviewCard");
+const revCounter = document.getElementById("revCounter");
+const revContext = document.getElementById("revContext");
+const revCands = document.getElementById("revCands");
+const revPrev = document.getElementById("revPrev");
+const revNext = document.getElementById("revNext");
+const revApply = document.getElementById("revApply");
+const revSkip = document.getElementById("revSkip");
+const revSearch = document.getElementById("revSearch");
+const revSearchTitle = document.getElementById("revSearchTitle");
+const revSearchAuthor = document.getElementById("revSearchAuthor");
+
+btnOpenReview.addEventListener("click", ()=>{
+  if(reviewItems.length===0){ alert("Nothing to review."); return; }
+  reviewIndex=0; reviewSelection=-1;
+  renderReview();
+  reviewCard.style.display="block";
+  window.scrollTo({top:reviewCard.offsetTop-10, behavior:"smooth"});
+});
+
+function renderReview(){
+  const it = reviewItems[reviewIndex];
+  revCounter.textContent = `Item ${reviewIndex+1} of ${reviewItems.length}`;
+  revContext.innerHTML = `<b>Original title:</b> ${it.original.title} 
+    ${it.original.year?`<span class="muted"> (Year: ${it.original.year})</span>`:""}<br/>
+    <b>First author (guess):</b> ${firstAuthorSurnameGuess(it.original.authors)||"<i>n/a</i>"}`;
+  revSearchTitle.value = it.original.title;
+  revSearchAuthor.value = firstAuthorSurnameGuess(it.original.authors)||"";
+  reviewSelection = -1;
+  revCands.innerHTML = it.candidates.map((c,idx)=>candHTML(c, idx)).join("");
+}
+
+function candHTML(c, idx){
+  const title = (pick(c.it.title)[0]||"").trim();
+  const auth = (Array.isArray(c.it.author)? c.it.author.slice(0,4).map(a=>[a.given,a.family].filter(Boolean).join(" ")).join("; ") : "");
+  const year = (c.it.issued && c.it.issued["date-parts"] && c.it.issued["date-parts"][0] ? c.it.issued["date-parts"][0][0] : "");
+  return `
+    <label class="cand">
+      <div class="flex">
+        <input type="radio" name="candPick" value="${idx}" />
+        <div style="width:100%">
+          <h4 class="nowrap" title="${title}">${title}</h4>
+          <div class="muted nowrap"><b>DOI:</b> ${c.it.DOI||"<i>—</i>"} &nbsp; | &nbsp; <b>Publisher:</b> ${c.it.publisher||"<i>—</i>"} &nbsp; | &nbsp; <b>Year:</b> ${year||"<i>—</i>"}</div>
+          <div class="muted nowrap"><b>Authors:</b> ${auth||"<i>—</i>"}</div>
+          <div class="muted"><b>Confidence:</b> ${c.conf.toFixed(3)} &nbsp; <b>Signals</b> 
+            [Jaccard=${c.jac.toFixed(3)}; author=${c.aHit?"✓":"–"}; year=${c.yOk?"✓":"–"}; aff=${c.aHitAff?"✓":"–"}; ROR=${c.rHit?"✓":"–"}]
+          </div>
+        </div>
+      </div>
+    </label>
+  `;
+}
+
+revCands.addEventListener("change",(e)=>{
+  if(e.target.name==="candPick") reviewSelection = parseInt(e.target.value,10);
+});
+
+revPrev.addEventListener("click", ()=>{
+  if(reviewIndex>0){ reviewIndex--; renderReview(); }
+});
+revNext.addEventListener("click", ()=>{
+  if(reviewIndex<reviewItems.length-1){ reviewIndex++; renderReview(); }
+});
+
+revSearch.addEventListener("click", async ()=>{
+  const it = reviewItems[reviewIndex];
+  const mailto = mailtoEl.value.trim();
+  const yearTol = parseInt(tolYearEl.value||"0",10);
+  const affKeys = splitCsvInput(affKeysEl.value);
+  const rorIds  = presentRORs(rorIdsEl.value);
+  const strictAff = cbStrictAff.checked;
+  const hintQueryAff = cbQueryAff.checked;
+
+  const items = await searchCrossrefByTitle({
+    title: revSearchTitle.value,
+    firstAuthor: revSearchAuthor.value,
+    mailto,
+    pubTypeGuess: selType.value,
+    year: (selYear.value? reviewItems[reviewIndex].original.year : ""),
+    yearTol,
+    affKeys, rorIds, hintQueryAff
+  });
+  await new Promise(r=>setTimeout(r,POLITE_DELAY_MS));
+
+  // re-score with current settings
+  const q = normTitleForMatch(revSearchTitle.value);
+  const fa = revSearchAuthor.value.toLowerCase();
+  const scored = items.map(it2=>{
+    const itTitle = pick(it2.title)[0]||"";
+    const t = normTitleForMatch(itTitle);
+    const jac=jaccard(q,t);
+    const aHit = fa && Array.isArray(it2.author) ? it2.author.some(a=>(a.family||a.name||"").toLowerCase().includes(fa)) : false;
+    const yOk = selYear.value ? yearOkFromIssued(it2.issued, reviewItems[reviewIndex].original.year, parseInt(tolYearEl.value||"0",10)) : false;
+    const aHitAff = affHitInItem(it2, splitCsvInput(affKeysEl.value));
+    const rHit = rorHitInItem(it2, presentRORs(rorIdsEl.value));
+    const conf = confidenceFromFeatures({jac,authorHit:aHit,yearOk:yOk,affHit:aHitAff,rorHit:rHit});
+    return {it:it2, conf, jac, aHit, yOk, aHitAff, rHit};
+  }).filter(sc => !strictAff || sc.aHitAff || sc.rHit)
+    .sort((a,b)=>b.conf-a.conf);
+
+  reviewItems[reviewIndex].candidates = scored.slice(0,6);
+  renderReview();
+});
+
+revApply.addEventListener("click", ()=>{
+  if(reviewSelection<0){ alert("Pick a candidate first."); return; }
+  const item = reviewItems[reviewIndex];
+  const cand = item.candidates[reviewSelection].it;
+  const idx = item.rowIndex;
+
+  // apply to processed[idx]
+  const row = processed[idx];
+  // Publisher/IDs/type/source
+  row.Publisher = cand.publisher || row.Publisher;
+  row.ISSN = joinUnique([row.ISSN, ...pick(cand.ISSN)]);
+  row.ISBN = joinUnique([row.ISBN, ...pick(cand.ISBN)]);
+  row.PubType = row.PubType || cand.type || row.PubType;
+  if(!row.SourceTitle){
+    const container = (cand["container-title"] && cand["container-title"][0]) ? cand["container-title"][0] : "";
+    row.SourceTitle = normSpace(container);
+  }
+  if(cand.DOI && !row.DOI) row.DOI = cand.DOI;
+
+  // Authors + Title (clean)
+  if(Array.isArray(cand.author) && cand.author.length){
+    const names = cand.author.map(a=>{
+      const given=normSpace(a.given||""), family=normSpace(a.family||"");
+      let fn = normSpace(`${given} ${family}`.trim());
+      if(!fn && a.name) fn = toFirstLast_one(a.name);
+      return fn.split(" ").map(p=>particles.has(p.toLowerCase())?p.toLowerCase():capitalizeWord(p)).join(" ");
+    });
+    row.CleanAuthors = names.filter(Boolean).join("; ");
+  }
+  if(Array.isArray(cand.title) && cand.title[0]){
+    row.CleanTitle = properCaseTitle(cand.title[0]);
+  }
+
+  row.MatchMethod = "review-accepted";
+  row.MatchConfidence = 0.0;
+  row.MatchNote = "Accepted by reviewer";
+
+  audit.push({
+    Row: idx+1, Title: row._OriginalTitle, DOI_in: "", DOI_norm: row.DOI||"",
+    FirstAuthorGuess: firstAuthorSurnameGuess(row._OriginalAuthors),
+    Year: row._Year, Used: "review-accepted", Confidence: 0, 
+    Note: "Reviewer override", Publisher: row.Publisher, ISSN: row.ISSN, ISBN: row.ISBN
+  });
+
+  // advance
+  if(reviewIndex<reviewItems.length-1){ reviewIndex++; renderReview(); }
+  else { reviewCard.style.display="none"; alert("Review queue completed."); }
+});
+
+revSkip.addEventListener("click", ()=>{
+  if(reviewIndex<reviewItems.length-1){ reviewIndex++; renderReview(); }
+  else { reviewCard.style.display="none"; alert("Review queue completed."); }
+});
+
+/*** --- Wire main buttons --- ***/
 document.getElementById("btnProcess").addEventListener("click", processAll);
 document.getElementById("btnDownload").addEventListener("click", downloadXLSX);
 </script>
